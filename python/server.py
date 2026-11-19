@@ -7,7 +7,7 @@ Includes comprehensive reporting functionality for transaction analytics and dat
 
 import os
 import re
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from dotenv import load_dotenv
 from globalpayments.api import PorticoConfig, ServicesContainer
 from globalpayments.api.payment_methods import CreditCardData
@@ -21,7 +21,9 @@ from reports import reports_bp
 load_dotenv()
 
 # Initialize application
-app = Flask(__name__, static_folder='.')
+# Serve only the frontend files, never the server's own files
+FRONTEND_DIR = os.path.dirname(os.path.abspath(__file__))
+app = Flask(__name__, static_folder=None)
 
 # Register reporting blueprint
 app.register_blueprint(reports_bp)
@@ -60,9 +62,15 @@ def sanitize_postal_code(postal_code: str) -> str:
     return sanitized[:10]
 
 @app.route('/')
+@app.route('/index.html')
 def index():
     """Serve the main HTML page."""
-    return app.send_static_file('index.html')
+    return send_from_directory(FRONTEND_DIR, 'index.html')
+
+@app.route('/documentation.html')
+def documentation():
+    """Serve the documentation page."""
+    return send_from_directory(FRONTEND_DIR, 'documentation.html')
 
 @app.route('/config')
 def get_config():
