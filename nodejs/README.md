@@ -187,4 +187,4 @@ PORT=8080 npm start
 
 For issues or questions:
 - Global Payments Developer Portal: https://developer.globalpayments.com
-- SDK Documentation: https://github.com/globalpayments/nodejs-sdk
+- SDK Documentation: https://github.com/globalpayments/node-sdk
