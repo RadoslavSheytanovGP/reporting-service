@@ -4,7 +4,7 @@
 
 ## Critical Patterns
 
-1. **The server entry files are scaffolding artifacts — use the reporting module files instead.** `server.js`, `server.py`, `main.go`, and `ProcessPaymentServlet.java` each contain a `PorticoConfig`/`SECRET_API_KEY` stub for a `/process-payment` endpoint unrelated to this sample. The actual reporting logic lives in `reporting-service.php`, `reporting-service.js`, `reporting_service.py`, `ReportingService.java`, `ReportingService.cs`, and `reporting_service.go`, all of which correctly use `GpApiConfig` with `GP_API_APP_ID`/`GP_API_APP_KEY`. Adding reporting logic to the stub files will configure the wrong gateway.
+1. **The server entry files are scaffolding artifacts — use the reporting module files instead.** `server.js`, `server.py`, `main.go`, and `ProcessPaymentServlet.java` each contain a `PorticoConfig`/`SECRET_API_KEY` stub for a `/process-payment` endpoint unrelated to this sample. The actual reporting logic lives in `reporting-service.php`, `reporting-service.js`, `reporting_service.py`, `ReportingService.java`, `ReportingService.cs`, and `reporting_service.go`, all of which use GP API with `GP_API_APP_ID`/`GP_API_APP_KEY` (`GpApiConfig`, except Go, see below). Adding reporting logic to the stub files will configure the wrong gateway.
 
 2. **Transaction status is not an SDK filter — it is applied client-side after fetching results.** `ReportingService::findTransactionsPaged()` accepts date range, transaction ID, payment type, amount, and card-last-four as SDK-level filters; it does not accept `status`. All six implementations retrieve the transaction result set from the SDK and then filter by status in application code. Passing `status` to the transaction SDK call does not error — it is silently ignored. **Exception:** Dispute and deposit reports DO support SDK-level status filtering — PHP uses `withDisputeStatus()`/`withDepositStatus()`, Python uses `with_dispute_status()`/`with_deposit_status()`, and the equivalent methods in other languages; these pass status directly to the SDK builder rather than filtering client-side.
 
@@ -39,16 +39,16 @@
 
 ### Python (Flask + Global Payments SDK)
 - [`python/reporting_service.py`](python/reporting_service.py) — `GlobalPaymentsReportingService` class; `search_transactions()`, `get_settlement_report()`, `get_dispute_report()`, `get_deposit_report()`, `get_batch_report()`, `export_transactions()`, `get_summary_stats()`
-- [`python/reports.py`](python/reports.py) — Flask blueprint `reports_bp`; single route dispatching `?action=`
+- [`python/reports.py`](python/reports.py) — Flask blueprint `reports_bp`; one handler at `/api/reports` (same path as Node.js, used by the page) and `/reports`, dispatching `?action=`; docs and `config` answer without credentials
 - [`python/server.py`](python/server.py) — main entry; registers `reports_bp`; contains a template `/process-payment` Portico stub — see Critical Pattern 1
-- [`python/requirements.txt`](python/requirements.txt) — Flask 3.0, `globalpayments.api` 2.0.4
+- [`python/requirements.txt`](python/requirements.txt) — Flask 3.1, `globalpayments.api` 2.0.8 (`GpApiConfig` and the GP API connector arrived in 2.0.5; 2.0.4 has no GP API support). The SDK ignores `config.environment` for the URL, so `service_url` is set to the sandbox explicitly. Pass dates, ids and filters with `where(SearchCriteria...)`: `with_start_date()`, `with_dispute_id()` and `with_deposit_id()` are not read by its GP API request builder. The transaction search and the dispute list go through `_gp_api_list()` (the SDK connector and mapping) because the SDK request builder sends an empty `amount=` on `/transactions` (GP API answers `SYSTEM_ERROR_DOWNSTREAM`) and `from`/`to` instead of `from_stage_time_created`/`to_stage_time_created` on `/disputes`
 
 ### Go (net/http + Global Payments SDK)
-- [`go/reporting_service.go`](go/reporting_service.go) — `ReportingService` struct; `NewReportingService()`, `configureSDK()`, `SearchTransactions()`, `GetSettlementReport()`, `GetDisputeReport()`, `GetDepositReport()`, `GetBatchReport()`; response format helpers are stubs returning empty slices
-- [`go/reports.go`](go/reports.go) — `InitializeReportingAPI()`; registers REST routes `/reports/search`, `/reports/detail`, `/reports/settlement`, `/reports/export`, `/reports/disputes`, `/reports/dispute/{id}`, `/reports/deposits`, `/reports/deposit/{id}`, `/reports/batches`, `/reports/declines`, `/reports/date-range`, `/reports/config`; also dispatches `?action=` for compatibility
-- [`go/main_reporting.go`](go/main_reporting.go) — reporting server entry point; default port `8080`
-- [`go/main.go`](go/main.go) — template payment stub; do not run for reporting — see Critical Pattern 1
-- [`go/go.mod`](go/go.mod) — `github.com/globalpayments/go-sdk` v1.1.3
+- [`go/gpapi.go`](go/gpapi.go) — small GP API client (access token, `GET` with `X-GP-Version`). The Go SDK has no GP API support at all (only `PorticoConfig`, up to v1.1.5), so the reports call `/transactions`, `/settlement/transactions`, `/disputes` and `/settlement/deposits` directly; settlement and deposit calls send the `DAA_` data account from the token response
+- [`go/reporting_service.go`](go/reporting_service.go) — `ReportingService` struct; `SearchTransactions()`, `GetTransactionDetails()`, `GetSettlementReport()`, `GetDisputeReport()`, `GetDisputeDetails()`, `GetDepositReport()`, `GetDepositDetails()`, `GetDateRangeReport()`, `ExportTransactions()`, `GetSummaryStats()`; the response shapes follow `nodejs/reporting-service.js`
+- [`go/reports.go`](go/reports.go) — `handleReports()`; `/api/reports?action=` like Node.js (also `/reports?action=`, `/api/reports/{action}`, `/reports/dispute/{id}`, `/reports/deposit/{id}`)
+- [`go/main.go`](go/main.go) — the only entry point: page, `/config`, the Portico `/process-payment` stub (see Critical Pattern 1) and the reporting routes; `go run .`
+- [`go/go.mod`](go/go.mod) — `github.com/globalpayments/go-sdk` v1.1.5 (used for the Portico payment only)
 
 ### Shared
 - [`index.html`](index.html) — root reporting dashboard frontend
@@ -60,13 +60,11 @@ Routing patterns differ by language; the action set is consistent across all imp
 
 | Method | Path | Languages | Purpose |
 |--------|------|-----------|---------|
-| GET | `/config` | Node.js, Python, Java, .NET | Environment and SDK status |
+| GET | `/config` | Node.js, Python, Java, .NET, Go | Environment and SDK status |
 | GET | `/config.php` | PHP | Environment and SDK status |
-| GET | `/reports/config` | Go | SDK status and endpoint list (no top-level `/config` in reporting server) |
 | GET/POST | `/reports.php?action=` | PHP | Action-based dispatch |
-| GET/POST | `/reports?action=` | Python, Java | Action-based dispatch |
-| GET/POST | `/api/reports?action=` | Node.js | Action-based dispatch |
-| GET/POST | `/reports/*` | Go | REST sub-paths; also accepts `?action=` |
+| GET/POST | `/reports?action=` | Java | Action-based dispatch |
+| GET/POST | `/api/reports?action=` | Node.js, Python, Go | Action-based dispatch (Python and Go also answer on `/reports`) |
 | GET/POST | `/api/reports/*` | .NET | REST sub-paths via controller |
 
 **Shared actions:** `search`, `detail`, `settlement`, `export`, `summary`, `disputes`, `dispute_detail`, `deposits`, `deposit_detail`, `batches`, `declines`, `date_range`, `config`
@@ -76,7 +74,7 @@ Routing patterns differ by language; the action set is consistent across all imp
 ```bash
 GP_API_APP_ID=your_app_id    # GP API application ID
 GP_API_APP_KEY=your_app_key  # GP API application key
-PORT=8000                     # Optional; defaults to 8000 (Go reporting entry defaults to 8080)
+PORT=8000                     # Optional; defaults to 8000
 ```
 
 > **Note:** All six `.env.sample` files contain both the scaffolding-template vars (`PUBLIC_API_KEY`, `SECRET_API_KEY`) and the reporting-service vars (`GP_API_APP_ID`, `GP_API_APP_KEY`). The scaffolding vars are not used by the reporting modules. Copy `.env.sample` to `.env` and fill in `GP_API_APP_ID` and `GP_API_APP_KEY` with your sandbox credentials.
@@ -102,8 +100,7 @@ cd dotnet && ./run.sh    # .NET — :8000
 cd java && ./run.sh      # Java — :8000
 cd python && ./run.sh    # Python — :8000
 
-# Go: run.sh starts the payment stub (main.go), not the reporting server
-cd go && go run reporting_service.go reports.go main_reporting.go  # Go — :8080
+cd go && ./run.sh        # Go — :8000
 
 # All at once:
 docker-compose up
@@ -132,7 +129,7 @@ curl "http://localhost:8000/reports?action=export&format=csv&start_date=2024-01-
 
 All language implementations expose identical reporting behavior. A change to one must be applied to all — each language in a separate commit. Do not modify shared files (`index.html`, `docker-compose.yml`) without confirming the change applies to every implementation.
 
-Note: `GetBatchReportAsync()` (.NET), `getBatchReport()` (Java), and `GetBatchReport()` (Go) are placeholder stubs returning empty data.
+Note: `GetBatchReportAsync()` (.NET) and `getBatchReport()` (Java) are placeholder stubs returning empty data. GP API has no batch report: Node.js, PHP, Python and Go answer `batches` with an `API_ERROR`.
 
 ## SDK Versions
 
@@ -140,5 +137,5 @@ Note: `GetBatchReportAsync()` (.NET), `getBatchReport()` (Java), and `GetBatchRe
 - **Node.js**: `globalpayments-api` ^3.10.6
 - **Java**: `globalpayments-sdk` 14.2.20
 - **.NET**: `GlobalPayments.Api` 9.0.16
-- **Python**: `globalpayments.api` 2.0.4
-- **Go**: `github.com/globalpayments/go-sdk` v1.1.3
+- **Python**: `globalpayments.api` 2.0.8
+- **Go**: `github.com/globalpayments/go-sdk` v1.1.5 (Portico only; the reports call GP API directly)

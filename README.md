@@ -14,8 +14,8 @@ Available in six languages: PHP, Node.js, .NET, Java, Python, and Go.
 | [**Node.js**](./nodejs/) | Express.js | globalpayments-api ^3.10.6 |
 | [**.NET**](./dotnet/) | ASP.NET Core | GlobalPayments.Api 9.0.16 |
 | [**Java**](./java/) | Jakarta Servlet | globalpayments-sdk 14.2.20 |
-| [**Python**](./python/) | Flask | globalpayments | latest |
-| [**Go**](./go/) | net/http | globalpayments-go | latest |
+| [**Python**](./python/) | Flask | globalpayments.api 2.0.8 |
+| [**Go**](./go/) | net/http | go-sdk v1.1.5 (payments); GP API called directly for reports |
 
 ---
 

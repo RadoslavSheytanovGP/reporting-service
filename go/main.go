@@ -183,10 +183,9 @@ func handlePayment(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	// Initialize environment configuration
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file")
+	// Load a local .env file when there is one; in Docker the variables are set directly
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found, using the environment variables")
 	}
 
 	// Configure Global Payments SDK with credentials and settings
@@ -196,7 +195,7 @@ func main() {
 	config.VersionNumber = "0000"
 	config.ServiceUrl = "https://cert.api2.heartlandportico.com"
 
-	err = api.ConfigureService(config, "default")
+	err := api.ConfigureService(config, "default")
 	if err != nil {
 		log.Fatal("Error configuring Global Payments service:", err)
 	}
@@ -206,6 +205,12 @@ func main() {
 	http.Handle("/config", http.HandlerFunc(handleConfig))
 	http.Handle("/process-payment", http.HandlerFunc(handlePayment))
 
+	// Reporting API, the same paths as the Node.js server (/reports is kept as well)
+	http.HandleFunc("/api/reports", handleReports)
+	http.HandleFunc("/api/reports/", handleReports)
+	http.HandleFunc("/reports", handleReports)
+	http.HandleFunc("/reports/", handleReports)
+
 	// Get port from environment variable or use default
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -213,6 +218,6 @@ func main() {
 	}
 
 	log.Printf("Server starting on http://localhost:%s", port)
-	log.Printf("Server also accessible at http://127.0.0.1:%s", port)
+	log.Printf("Reporting API: http://localhost:%s/api/reports", port)
 	log.Fatal(http.ListenAndServe("0.0.0.0:"+port, nil))
 }
