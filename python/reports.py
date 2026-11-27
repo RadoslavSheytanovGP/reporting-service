@@ -13,20 +13,13 @@ from datetime import datetime
 from typing import Dict, Any
 
 from reporting_service import (
+    BadRequest,
     GlobalPaymentsReportingService,
     ReportError,
     get_sdk_config_status,
     validate_environment_config
 )
 from globalpayments.api.entities.exceptions import ApiException
-
-
-class BadRequest(ValueError):
-    """A problem with the request, the message is written for the caller."""
-
-    def __init__(self, public_message: str):
-        ValueError.__init__(self, public_message)
-        self.public_message = public_message
 
 
 # Create a Blueprint for reporting routes

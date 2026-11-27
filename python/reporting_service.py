@@ -49,6 +49,14 @@ class ReportError(ApiException):
         self.public_message = public_message
 
 
+class BadRequest(ValueError):
+    """A problem with the request or the settings, the message is written for the caller."""
+
+    def __init__(self, public_message: str):
+        ValueError.__init__(self, public_message)
+        self.public_message = public_message
+
+
 class GlobalPaymentsReportingService:
     """
     Global Payments Reporting Service Class
@@ -63,7 +71,7 @@ class GlobalPaymentsReportingService:
         try:
             self._configure_gp_api_sdk()
             self.is_configured = True
-        except ReportError:
+        except (BadRequest, ReportError):
             raise
         except Exception:
             logger.exception('Failed to configure the SDK')
@@ -77,7 +85,7 @@ class GlobalPaymentsReportingService:
         required_vars = ['GP_API_APP_ID', 'GP_API_APP_KEY']
         for var in required_vars:
             if not os.getenv(var):
-                raise ReportError(f"Missing required environment variable: {var}")
+                raise BadRequest(f"Failed to configure SDK: Missing required environment variable: {var}")
 
         config = GpApiConfig()
         config.app_id = os.getenv('GP_API_APP_ID')
@@ -128,7 +136,7 @@ class GlobalPaymentsReportingService:
             if filters.get('payment_type'):
                 payment_type = self._map_payment_type(filters['payment_type'])
                 if not payment_type:
-                    raise ValueError('Invalid payment_type. Supported values: sale, refund')
+                    raise BadRequest('Invalid payment_type. Supported values: sale, refund')
                 query['type'] = payment_type.value
 
             response = self._gp_api_list(
