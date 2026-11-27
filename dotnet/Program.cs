@@ -67,34 +67,35 @@ public class Program
     }
 
     /// <summary>
-    /// Configures the Global Payments SDK with GP-API credentials and settings.
-    /// This must be called before processing any payments and reporting.
+    /// Configures the Global Payments SDK with the Portico credentials for the
+    /// payment example. The reports use their own GP API config (see ReportingService.cs).
     /// </summary>
     private static void ConfigureGlobalPaymentsSDK()
     {
-        var appId = System.Environment.GetEnvironmentVariable("GP_API_APP_ID");
-        var appKey = System.Environment.GetEnvironmentVariable("GP_API_APP_KEY");
-        
-        if (string.IsNullOrEmpty(appId) || string.IsNullOrEmpty(appKey))
+        var secretApiKey = System.Environment.GetEnvironmentVariable("SECRET_API_KEY");
+
+        if (string.IsNullOrEmpty(secretApiKey))
         {
-            Console.WriteLine("WARNING: GP_API_APP_ID or GP_API_APP_KEY environment variable is not set");
+            Console.WriteLine("WARNING: SECRET_API_KEY environment variable is not set");
             return; // Don't throw exception, just log warning
         }
 
         try
         {
-            ServicesContainer.ConfigureService(new GpApiConfig
+            // The page tokenizes the card with Portico hosted fields, so the charge
+            // goes to Portico, registered as "portico" next to the reports' "reports" config
+            ServicesContainer.ConfigureService(new PorticoConfig
             {
-                AppId = appId,
-                AppKey = appKey,
-                Environment = GlobalPayments.Api.Entities.Environment.TEST,
-                Channel = Channel.CardNotPresent
-            });
-            Console.WriteLine("Global Payments GP-API SDK configured successfully");
+                SecretApiKey = secretApiKey,
+                DeveloperId = "000000",
+                VersionNumber = "0000",
+                ServiceUrl = "https://cert.api2.heartlandportico.com" // Use the production URL for live transactions
+            }, "portico");
+            Console.WriteLine("Global Payments Portico SDK configured successfully");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Failed to configure Global Payments GP-API SDK: {ex.Message}");
+            Console.WriteLine($"Failed to configure Global Payments Portico SDK: {ex.Message}");
             // Don't throw, just log the error
         }
     }
@@ -195,7 +196,7 @@ public class Program
                     .WithAllowDuplicates(true)
                     .WithCurrency("USD")
                     .WithAddress(address)
-                    .Execute();
+                    .Execute("portico");
 
                 // Verify transaction was successful
                 if (response.ResponseCode != "00")
