@@ -39,9 +39,9 @@
 
 ### Python (Flask + Global Payments SDK)
 - [`python/reporting_service.py`](python/reporting_service.py) — `GlobalPaymentsReportingService` class; `search_transactions()`, `get_settlement_report()`, `get_dispute_report()`, `get_deposit_report()`, `get_batch_report()`, `export_transactions()`, `get_summary_stats()`
-- [`python/reports.py`](python/reports.py) — Flask blueprint `reports_bp`; single route dispatching `?action=`
+- [`python/reports.py`](python/reports.py) — Flask blueprint `reports_bp`; one handler at `/api/reports` (same path as Node.js, used by the page) and `/reports`, dispatching `?action=`; docs and `config` answer without credentials
 - [`python/server.py`](python/server.py) — main entry; registers `reports_bp`; contains a template `/process-payment` Portico stub — see Critical Pattern 1
-- [`python/requirements.txt`](python/requirements.txt) — Flask 3.0, `globalpayments.api` 2.0.4
+- [`python/requirements.txt`](python/requirements.txt) — Flask 3.1, `globalpayments.api` 2.0.8 (`GpApiConfig` and the GP API connector arrived in 2.0.5; 2.0.4 has no GP API support). The SDK ignores `config.environment` for the URL, so `service_url` is set to the sandbox explicitly. Pass dates, ids and filters with `where(SearchCriteria...)`: `with_start_date()`, `with_dispute_id()` and `with_deposit_id()` are not read by its GP API request builder
 
 ### Go (net/http + Global Payments SDK)
 - [`go/reporting_service.go`](go/reporting_service.go) — `ReportingService` struct; `NewReportingService()`, `configureSDK()`, `SearchTransactions()`, `GetSettlementReport()`, `GetDisputeReport()`, `GetDepositReport()`, `GetBatchReport()`; response format helpers are stubs returning empty slices
@@ -64,8 +64,8 @@ Routing patterns differ by language; the action set is consistent across all imp
 | GET | `/config.php` | PHP | Environment and SDK status |
 | GET | `/reports/config` | Go | SDK status and endpoint list (no top-level `/config` in reporting server) |
 | GET/POST | `/reports.php?action=` | PHP | Action-based dispatch |
-| GET/POST | `/reports?action=` | Python, Java | Action-based dispatch |
-| GET/POST | `/api/reports?action=` | Node.js | Action-based dispatch |
+| GET/POST | `/reports?action=` | Java | Action-based dispatch |
+| GET/POST | `/api/reports?action=` | Node.js, Python | Action-based dispatch (Python also answers on `/reports`) |
 | GET/POST | `/reports/*` | Go | REST sub-paths; also accepts `?action=` |
 | GET/POST | `/api/reports/*` | .NET | REST sub-paths via controller |
 
@@ -140,5 +140,5 @@ Note: `GetBatchReportAsync()` (.NET), `getBatchReport()` (Java), and `GetBatchRe
 - **Node.js**: `globalpayments-api` ^3.10.6
 - **Java**: `globalpayments-sdk` 14.2.20
 - **.NET**: `GlobalPayments.Api` 9.0.16
-- **Python**: `globalpayments.api` 2.0.4
+- **Python**: `globalpayments.api` 2.0.8
 - **Go**: `github.com/globalpayments/go-sdk` v1.1.3

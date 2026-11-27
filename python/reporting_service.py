@@ -4,27 +4,34 @@ Global Payments Reporting Service
 This service class provides comprehensive reporting functionality for
 Global Payments transactions including search, filtering, and data export.
 
-Python version 3.7 or higher
+Python version 3.11 or higher
 """
 
 import logging
 import os
 from datetime import datetime
+from enum import Enum
+from xml.sax.saxutils import escape
 from typing import Dict, List, Any, Optional
 from dotenv import load_dotenv
 
-from globalpayments.api import ServicesContainer
+from globalpayments.api import GpApiConfig, ServicesContainer
+from globalpayments.api.builders import TransactionReportBuilder
 from globalpayments.api.services import ReportingService
-from globalpayments.api.gateways import GpApiConfig
 from globalpayments.api.entities.enums import (
     Environment,
-    Channel,
-    TransactionStatus,
-    PaymentType
+    CardChannel,
+    PaymentType,
+    ReportType,
+    SearchCriteria
 )
 from globalpayments.api.entities.exceptions import ApiException
 
 logger = logging.getLogger(__name__)
+
+# The Python SDK does not pick the GP API URL from config.environment,
+# so the sandbox URL is set on the config directly
+GP_API_SANDBOX_URL = 'https://apis.sandbox.globalpay.com/ucp'
 
 
 class GlobalPaymentsReportingService:
@@ -61,8 +68,9 @@ class GlobalPaymentsReportingService:
         config = GpApiConfig()
         config.app_id = os.getenv('GP_API_APP_ID')
         config.app_key = os.getenv('GP_API_APP_KEY')
-        config.environment = Environment.TEST  # Change to PRODUCTION for live
-        config.channel = Channel.CardNotPresent
+        config.environment = Environment.Test  # Change to Production for live
+        config.service_url = GP_API_SANDBOX_URL  # Use https://apis.globalpay.com/ucp for live
+        config.channel = CardChannel.CARD_NOT_PRESENT
 
         ServicesContainer.configure(config, 'default')
 
@@ -90,42 +98,37 @@ class GlobalPaymentsReportingService:
             page = filters.get('page', 1)
             page_size = filters.get('page_size', 10)
 
-            report_builder = ReportingService.find_transactions_paged(page, page_size)
+            report_builder = ReportingService.find_transactions_paged(
+                page, page_size, filters.get('transaction_id') or None
+            )
 
             # Apply date range filters
-            if filters.get('start_date'):
-                start_date = datetime.strptime(filters['start_date'], '%Y-%m-%d')
-                report_builder.with_start_date(start_date)
-
-            if filters.get('end_date'):
-                end_date = datetime.strptime(filters['end_date'], '%Y-%m-%d')
-                report_builder.with_end_date(end_date)
-
-            # Apply transaction ID filter
-            if filters.get('transaction_id'):
-                report_builder.with_transaction_id(filters['transaction_id'])
+            self._apply_date_range(report_builder, filters)
 
             # Apply payment type filter
             if filters.get('payment_type'):
                 payment_type = self._map_payment_type(filters['payment_type'])
-                if payment_type:
-                    report_builder.with_payment_type(payment_type)
-
-            # Apply amount range filters
-            if filters.get('amount_min'):
-                report_builder.with_amount(float(filters['amount_min']))
-
-            if filters.get('amount_max'):
-                report_builder.with_amount(float(filters['amount_max']))
+                if not payment_type:
+                    raise ValueError('Invalid payment_type. Supported values: sale, refund')
+                report_builder.where(SearchCriteria.PaymentType, payment_type)
 
             # Apply card number filter (last 4 digits)
             if filters.get('card_last_four'):
-                report_builder.with_card_number_last_four(filters['card_last_four'])
+                report_builder.where(SearchCriteria.CardNumberLastFour, filters['card_last_four'])
 
             # Execute the search
             response = report_builder.execute()
 
-            transactions = self._format_transaction_list(response.results if response.results else [])
+            transactions = self._format_transaction_list(response.result or [])
+
+            # GP API only filters on an exact amount, so the range is applied here
+            if filters.get('amount_min'):
+                amount_min = float(filters['amount_min'])
+                transactions = [t for t in transactions if t['amount'] >= amount_min]
+
+            if filters.get('amount_max'):
+                amount_max = float(filters['amount_max'])
+                transactions = [t for t in transactions if t['amount'] <= amount_max]
 
             # Apply client-side filtering for status if needed
             if filters.get('status'):
@@ -140,7 +143,7 @@ class GlobalPaymentsReportingService:
                         'page': page,
                         'page_size': page_size,
                         'total_count': len(transactions),
-                        'original_total_count': response.total_record_count if hasattr(response, 'total_record_count') else 0
+                        'original_total_count': response.total_record_count or 0
                     }
                 },
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -196,30 +199,26 @@ class GlobalPaymentsReportingService:
             page = params.get('page', 1)
             page_size = params.get('page_size', 50)
 
-            report_builder = ReportingService.find_settlement_transactions_paged(page, page_size)
+            report_builder = TransactionReportBuilder(
+                ReportType.FindSettlementTransactionsPaged
+            ).with_paging(page, page_size)
 
             # Apply date range
-            if params.get('start_date'):
-                start_date = datetime.strptime(params['start_date'], '%Y-%m-%d')
-                report_builder.with_start_date(start_date)
-
-            if params.get('end_date'):
-                end_date = datetime.strptime(params['end_date'], '%Y-%m-%d')
-                report_builder.with_end_date(end_date)
+            self._apply_date_range(report_builder, params)
 
             response = report_builder.execute()
 
-            settlements = self._format_settlement_list(response.results if response.results else [])
+            settlements = self._format_settlement_list(response.result or [])
 
             return {
                 'success': True,
                 'data': {
                     'settlements': settlements,
-                    'summary': self._generate_settlement_summary(response.results if response.results else []),
+                    'summary': self._generate_settlement_summary(settlements),
                     'pagination': {
                         'page': page,
                         'page_size': page_size,
-                        'total_count': response.total_record_count if hasattr(response, 'total_record_count') else 0
+                        'total_count': response.total_record_count or 0
                     }
                 },
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -247,24 +246,20 @@ class GlobalPaymentsReportingService:
             page = filters.get('page', 1)
             page_size = filters.get('page_size', 10)
 
-            report_builder = ReportingService.find_disputes_paged(page, page_size)
+            report_builder = TransactionReportBuilder(
+                ReportType.FindDisputesPaged
+            ).with_paging(page, page_size)
 
             # Apply date range filters
-            if filters.get('start_date'):
-                start_date = datetime.strptime(filters['start_date'], '%Y-%m-%d')
-                report_builder.with_start_date(start_date)
-
-            if filters.get('end_date'):
-                end_date = datetime.strptime(filters['end_date'], '%Y-%m-%d')
-                report_builder.with_end_date(end_date)
+            self._apply_date_range(report_builder, filters)
 
             # Apply dispute stage filter
             if filters.get('stage'):
-                report_builder.with_dispute_stage(filters['stage'])
+                report_builder.where(SearchCriteria.DisputeStage, filters['stage'].upper())
 
             # Apply dispute status filter
             if filters.get('status'):
-                report_builder.with_dispute_status(filters['status'])
+                report_builder.where(SearchCriteria.DisputeStatus, filters['status'].upper())
 
             # Execute the search
             response = report_builder.execute()
@@ -272,11 +267,11 @@ class GlobalPaymentsReportingService:
             return {
                 'success': True,
                 'data': {
-                    'disputes': self._format_dispute_list(response.results if response.results else []),
+                    'disputes': self._format_dispute_list(response.result or []),
                     'pagination': {
                         'page': page,
                         'page_size': page_size,
-                        'total_count': response.total_record_count if hasattr(response, 'total_record_count') else 0
+                        'total_count': response.total_record_count or 0
                     }
                 },
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -298,7 +293,10 @@ class GlobalPaymentsReportingService:
         self._ensure_configured()
 
         try:
-            report_builder = ReportingService.dispute_detail(dispute_id)
+            # with_dispute_id() stores the id where the GP API request builder
+            # does not read it, so the id is passed as a search criterion
+            report_builder = TransactionReportBuilder(ReportType.DisputeDetail)
+            report_builder.where(SearchCriteria.DisputeId, dispute_id)
             response = report_builder.execute()
 
             if not response:
@@ -332,24 +330,20 @@ class GlobalPaymentsReportingService:
             page = filters.get('page', 1)
             page_size = filters.get('page_size', 10)
 
-            report_builder = ReportingService.find_deposits_paged(page, page_size)
+            report_builder = TransactionReportBuilder(
+                ReportType.FindDepositsPaged
+            ).with_paging(page, page_size)
 
             # Apply date range filters
-            if filters.get('start_date'):
-                start_date = datetime.strptime(filters['start_date'], '%Y-%m-%d')
-                report_builder.with_start_date(start_date)
-
-            if filters.get('end_date'):
-                end_date = datetime.strptime(filters['end_date'], '%Y-%m-%d')
-                report_builder.with_end_date(end_date)
+            self._apply_date_range(report_builder, filters)
 
             # Apply deposit ID filter
             if filters.get('deposit_id'):
-                report_builder.with_deposit_reference(filters['deposit_id'])
+                report_builder.where(SearchCriteria.DepositId, filters['deposit_id'])
 
             # Apply status filter
             if filters.get('status'):
-                report_builder.with_deposit_status(filters['status'])
+                report_builder.where(SearchCriteria.DepositStatus, filters['status'].upper())
 
             # Execute the search
             response = report_builder.execute()
@@ -357,11 +351,11 @@ class GlobalPaymentsReportingService:
             return {
                 'success': True,
                 'data': {
-                    'deposits': self._format_deposit_list(response.results if response.results else []),
+                    'deposits': self._format_deposit_list(response.result or []),
                     'pagination': {
                         'page': page,
                         'page_size': page_size,
-                        'total_count': response.total_record_count if hasattr(response, 'total_record_count') else 0
+                        'total_count': response.total_record_count or 0
                     }
                 },
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -383,7 +377,9 @@ class GlobalPaymentsReportingService:
         self._ensure_configured()
 
         try:
-            report_builder = ReportingService.deposit_detail(deposit_id)
+            # Same as disputes: with_deposit_id() is not read by the GP API request builder
+            report_builder = TransactionReportBuilder(ReportType.DepositDetail)
+            report_builder.where(SearchCriteria.DepositId, deposit_id)
             response = report_builder.execute()
 
             if not response:
@@ -410,37 +406,9 @@ class GlobalPaymentsReportingService:
         """
         self._ensure_configured()
 
-        if filters is None:
-            filters = {}
-
-        try:
-            report_builder = ReportingService.batch_detail()
-
-            # Apply date range filters
-            if filters.get('start_date'):
-                start_date = datetime.strptime(filters['start_date'], '%Y-%m-%d')
-                report_builder.with_start_date(start_date)
-
-            if filters.get('end_date'):
-                end_date = datetime.strptime(filters['end_date'], '%Y-%m-%d')
-                report_builder.with_end_date(end_date)
-
-            # Execute the search
-            response = report_builder.execute()
-
-            batches = response.results if response.results else []
-
-            return {
-                'success': True,
-                'data': {
-                    'batches': self._format_batch_list(batches),
-                    'summary': self._generate_batch_summary(batches)
-                },
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
-
-        except ApiException as e:
-            raise ApiException(f'Batch report generation failed: {str(e)}')
+        # GP API has no batch report (batch_detail() is a Portico report), so
+        # this answers with the same API error the Node.js and PHP services give
+        raise ApiException('Batch report generation failed: batch reports are not available through GP API')
 
     def get_declined_transactions_report(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -678,13 +646,43 @@ class GlobalPaymentsReportingService:
 
     # Helper methods for mapping and formatting
 
+    @staticmethod
+    def _apply_date_range(report_builder: TransactionReportBuilder, filters: Dict[str, Any]) -> None:
+        """Pass the start and end dates to the SDK as search criteria"""
+        # with_start_date()/with_end_date() are not read by the GP API request
+        # builder, only the StartDate/EndDate search criteria are
+        if filters.get('start_date'):
+            start_date = datetime.strptime(filters['start_date'], '%Y-%m-%d')
+            report_builder.where(SearchCriteria.StartDate, start_date)
+
+        if filters.get('end_date'):
+            end_date = datetime.strptime(filters['end_date'], '%Y-%m-%d')
+            report_builder.where(SearchCriteria.EndDate, end_date)
+
+    @staticmethod
+    def _text(value: Any) -> str:
+        """Turn an SDK value (enum, datetime or None) into a plain string"""
+        if value is None:
+            return ''
+        if isinstance(value, Enum):
+            return str(value.value)
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return str(value)
+
+    @staticmethod
+    def _amount(value: Any) -> float:
+        """The SDK returns amounts as strings in major units, e.g. '19.99'"""
+        try:
+            return float(value) if value not in (None, '') else 0
+        except (TypeError, ValueError):
+            return 0
+
     def _map_payment_type(self, payment_type: str) -> Optional[PaymentType]:
         """Map payment type string to PaymentType enum"""
         mapping = {
-            'sale': PaymentType.Sale,
-            'refund': PaymentType.Refund,
-            'authorize': PaymentType.Auth,
-            'capture': PaymentType.Capture
+            'sale': PaymentType.SALE,
+            'refund': PaymentType.REFUND
         }
         return mapping.get(payment_type.lower())
 
@@ -692,15 +690,15 @@ class GlobalPaymentsReportingService:
         """Format transaction list for API response"""
         return [
             {
-                'transaction_id': getattr(t, 'transaction_id', ''),
-                'timestamp': str(getattr(t, 'transaction_date', '')),
-                'amount': getattr(t, 'amount', 0),
-                'currency': getattr(t, 'currency', 'USD'),
-                'status': getattr(t, 'transaction_status', ''),
-                'payment_method': getattr(t, 'payment_type', ''),
-                'card_last_four': getattr(t, 'masked_card_number', ''),
-                'auth_code': getattr(t, 'auth_code', ''),
-                'reference_number': getattr(t, 'reference_number', '')
+                'transaction_id': self._text(getattr(t, 'transaction_id', None)),
+                'timestamp': self._text(getattr(t, 'transaction_date', None)),
+                'amount': self._amount(getattr(t, 'amount', None)),
+                'currency': getattr(t, 'currency', None) or 'USD',
+                'status': self._text(getattr(t, 'transaction_status', None)),
+                'payment_method': self._text(getattr(t, 'payment_type', None)),
+                'card_last_four': self._text(getattr(t, 'masked_card_number', None)),
+                'auth_code': self._text(getattr(t, 'auth_code', None)),
+                'reference_number': self._text(getattr(t, 'reference_number', None))
             }
             for t in transactions
         ]
@@ -708,41 +706,44 @@ class GlobalPaymentsReportingService:
     def _format_transaction_details(self, transaction: Any) -> Dict[str, Any]:
         """Format detailed transaction information"""
         return {
-            'transaction_id': getattr(transaction, 'transaction_id', ''),
-            'timestamp': str(getattr(transaction, 'transaction_date', '')),
-            'amount': getattr(transaction, 'amount', 0),
-            'currency': getattr(transaction, 'currency', 'USD'),
-            'status': getattr(transaction, 'transaction_status', ''),
-            'payment_method': getattr(transaction, 'payment_type', ''),
+            'transaction_id': self._text(getattr(transaction, 'transaction_id', None)),
+            'timestamp': self._text(getattr(transaction, 'transaction_date', None)),
+            'amount': self._amount(getattr(transaction, 'amount', None)),
+            'currency': getattr(transaction, 'currency', None) or 'USD',
+            'status': self._text(getattr(transaction, 'transaction_status', None)),
+            'payment_method': self._text(getattr(transaction, 'payment_type', None)),
             'card_details': {
-                'masked_number': getattr(transaction, 'masked_card_number', ''),
-                'card_type': getattr(transaction, 'card_type', ''),
-                'entry_mode': getattr(transaction, 'entry_mode', '')
+                'masked_number': self._text(getattr(transaction, 'masked_card_number', None)),
+                'card_type': self._text(getattr(transaction, 'card_type', None)),
+                'entry_mode': self._text(getattr(transaction, 'entry_mode', None))
             },
-            'auth_code': getattr(transaction, 'auth_code', ''),
-            'reference_number': getattr(transaction, 'reference_number', ''),
-            'gateway_response_code': getattr(transaction, 'gateway_response_code', ''),
-            'gateway_response_message': getattr(transaction, 'gateway_response_message', '')
+            'auth_code': self._text(getattr(transaction, 'auth_code', None)),
+            'reference_number': self._text(getattr(transaction, 'reference_number', None)),
+            'gateway_response_code': self._text(getattr(transaction, 'gateway_response_code', None)),
+            'gateway_response_message': self._text(getattr(transaction, 'gateway_response_message', None))
         }
 
     def _format_settlement_list(self, settlements: List[Any]) -> List[Dict[str, Any]]:
         """Format settlement list for API response"""
+        # GP API returns one settled transaction per row, not settlement totals
         return [
             {
-                'settlement_id': getattr(s, 'settlement_id', ''),
-                'settlement_date': str(getattr(s, 'settlement_date', '')),
-                'transaction_count': getattr(s, 'transaction_count', 0),
-                'total_amount': getattr(s, 'total_amount', 0),
-                'currency': getattr(s, 'currency', 'USD'),
-                'status': getattr(s, 'status', '')
+                'settlement_id': self._text(getattr(s, 'transaction_id', None)),
+                'settlement_date': self._text(
+                    getattr(s, 'deposit_time_created', None) or getattr(s, 'transaction_date', None)
+                ),
+                'transaction_count': 1,
+                'total_amount': self._amount(getattr(s, 'amount', None)),
+                'currency': getattr(s, 'currency', None) or 'USD',
+                'status': self._text(getattr(s, 'transaction_status', None))
             }
             for s in settlements
         ]
 
-    def _generate_settlement_summary(self, settlements: List[Any]) -> Dict[str, Any]:
+    def _generate_settlement_summary(self, settlements: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Generate settlement summary statistics"""
-        total_amount = sum(getattr(s, 'total_amount', 0) for s in settlements)
-        total_transactions = sum(getattr(s, 'transaction_count', 0) for s in settlements)
+        total_amount = sum(s['total_amount'] for s in settlements)
+        total_transactions = sum(s['transaction_count'] for s in settlements)
 
         return {
             'total_settlements': len(settlements),
@@ -751,65 +752,65 @@ class GlobalPaymentsReportingService:
             'average_settlement_amount': total_amount / len(settlements) if settlements else 0
         }
 
+    def _format_dispute(self, d: Any) -> Dict[str, Any]:
+        """Fields shared by the dispute list and the dispute detail"""
+        return {
+            'dispute_id': self._text(getattr(d, 'case_id', None)),
+            'transaction_id': self._text(getattr(d, 'transaction_id', None)),
+            'case_number': self._text(getattr(d, 'case_number', None)),
+            'dispute_stage': self._text(getattr(d, 'case_stage', None)),
+            'dispute_status': self._text(getattr(d, 'case_status', None)),
+            'case_amount': self._amount(getattr(d, 'case_amount', None)),
+            'currency': getattr(d, 'case_currency', None) or 'USD',
+            'reason_code': self._text(getattr(d, 'reason_code', None)),
+            'reason_description': self._text(getattr(d, 'reason', None)),
+            'case_time': self._text(getattr(d, 'case_id_time', None)),
+            'last_adjustment_time': self._text(getattr(d, 'last_adjustment_time', None))
+        }
+
     def _format_dispute_list(self, disputes: List[Any]) -> List[Dict[str, Any]]:
         """Format dispute list for API response"""
-        return [
-            {
-                'dispute_id': getattr(d, 'case_id', ''),
-                'transaction_id': getattr(d, 'transaction_id', ''),
-                'case_number': getattr(d, 'case_number', ''),
-                'dispute_stage': getattr(d, 'case_stage', ''),
-                'dispute_status': getattr(d, 'case_status', ''),
-                'case_amount': getattr(d, 'case_amount', 0),
-                'currency': getattr(d, 'case_currency', 'USD'),
-                'reason_code': getattr(d, 'reason_code', ''),
-                'reason_description': getattr(d, 'reason', ''),
-                'case_time': str(getattr(d, 'case_time', '')),
-                'last_adjustment_time': str(getattr(d, 'last_adjustment_time', ''))
-            }
-            for d in disputes
-        ]
+        return [self._format_dispute(d) for d in disputes]
 
     def _format_dispute_details(self, dispute: Any) -> Dict[str, Any]:
         """Format detailed dispute information"""
         return {
-            'dispute_id': getattr(dispute, 'case_id', ''),
-            'transaction_id': getattr(dispute, 'transaction_id', ''),
-            'case_number': getattr(dispute, 'case_number', ''),
-            'dispute_stage': getattr(dispute, 'case_stage', ''),
-            'dispute_status': getattr(dispute, 'case_status', ''),
-            'case_amount': getattr(dispute, 'case_amount', 0),
-            'currency': getattr(dispute, 'case_currency', 'USD'),
-            'reason_code': getattr(dispute, 'reason_code', ''),
-            'reason_description': getattr(dispute, 'reason', ''),
-            'case_time': str(getattr(dispute, 'case_time', '')),
-            'last_adjustment_time': str(getattr(dispute, 'last_adjustment_time', '')),
-            'case_description': getattr(dispute, 'case_description', ''),
-            'documents': getattr(dispute, 'documents', []),
+            **self._format_dispute(dispute),
+            'case_description': self._text(getattr(dispute, 'case_description', None)),
+            'documents': [
+                {'id': self._text(doc.id), 'type': self._text(getattr(doc, 'type', None))}
+                for doc in (getattr(dispute, 'documents', None) or [])
+            ],
             'transaction_details': {
-                'amount': getattr(dispute, 'transaction_amount', 0),
-                'currency': getattr(dispute, 'transaction_currency', 'USD'),
-                'masked_card_number': getattr(dispute, 'transaction_masked_card_number', ''),
-                'arn': getattr(dispute, 'transaction_arn', '')
+                'amount': self._amount(getattr(dispute, 'transaction_amount', None)),
+                'currency': getattr(dispute, 'transaction_currency', None) or 'USD',
+                'masked_card_number': self._text(getattr(dispute, 'transaction_masked_card_number', None)),
+                'arn': self._text(getattr(dispute, 'transaction_arn', None))
             }
+        }
+
+    def _format_deposit(self, d: Any) -> Dict[str, Any]:
+        """Fields shared by the deposit list and the deposit detail"""
+        return {
+            'deposit_id': self._text(getattr(d, 'deposit_id', None)),
+            'deposit_date': self._text(getattr(d, 'deposit_date', None)),
+            'deposit_reference': self._text(getattr(d, 'reference', None)),
+            'deposit_status': self._text(getattr(d, 'status', None)),
+            'deposit_amount': self._amount(getattr(d, 'amount', None)),
+            'currency': getattr(d, 'currency', None) or 'USD',
+            'merchant_number': self._text(getattr(d, 'merchant_id', None)),
+            'merchant_hierarchy': self._text(getattr(d, 'merchant_hierarchy', None))
         }
 
     def _format_deposit_list(self, deposits: List[Any]) -> List[Dict[str, Any]]:
         """Format deposit list for API response"""
         return [
             {
-                'deposit_id': getattr(d, 'deposit_id', ''),
-                'deposit_date': str(getattr(d, 'deposit_date', '')),
-                'deposit_reference': getattr(d, 'deposit_reference', ''),
-                'deposit_status': getattr(d, 'status', ''),
-                'deposit_amount': getattr(d, 'amount', 0),
-                'currency': getattr(d, 'currency', 'USD'),
-                'merchant_number': getattr(d, 'merchant_number', ''),
-                'merchant_hierarchy': getattr(d, 'merchant_hierarchy', ''),
-                'sales_count': getattr(d, 'sales_count', 0),
-                'sales_amount': getattr(d, 'sales_amount', 0),
-                'refunds_count': getattr(d, 'refunds_count', 0),
-                'refunds_amount': getattr(d, 'refunds_amount', 0)
+                **self._format_deposit(d),
+                'sales_count': getattr(d, 'sales_total_count', None) or 0,
+                'sales_amount': self._amount(getattr(d, 'sales_total_amount', None)),
+                'refunds_count': getattr(d, 'refunds_total_count', None) or 0,
+                'refunds_amount': self._amount(getattr(d, 'refunds_total_amount', None))
             }
             for d in deposits
         ]
@@ -817,62 +818,21 @@ class GlobalPaymentsReportingService:
     def _format_deposit_details(self, deposit: Any) -> Dict[str, Any]:
         """Format detailed deposit information"""
         return {
-            'deposit_id': getattr(deposit, 'deposit_id', ''),
-            'deposit_date': str(getattr(deposit, 'deposit_date', '')),
-            'deposit_reference': getattr(deposit, 'deposit_reference', ''),
-            'deposit_status': getattr(deposit, 'status', ''),
-            'deposit_amount': getattr(deposit, 'amount', 0),
-            'currency': getattr(deposit, 'currency', 'USD'),
-            'merchant_number': getattr(deposit, 'merchant_number', ''),
-            'merchant_hierarchy': getattr(deposit, 'merchant_hierarchy', ''),
+            **self._format_deposit(deposit),
             'bank_account': {
-                'masked_account_number': getattr(deposit, 'masked_account_number', ''),
-                'bank_name': getattr(deposit, 'bank_name', '')
+                'masked_account_number': self._text(getattr(deposit, 'account_number', None)),
+                'bank_name': self._text(getattr(deposit, 'bank_name', None))
             },
             'transaction_summary': {
-                'sales_count': getattr(deposit, 'sales_count', 0),
-                'sales_amount': getattr(deposit, 'sales_amount', 0),
-                'refunds_count': getattr(deposit, 'refunds_count', 0),
-                'refunds_amount': getattr(deposit, 'refunds_amount', 0),
-                'chargebacks_count': getattr(deposit, 'chargebacks_count', 0),
-                'chargebacks_amount': getattr(deposit, 'chargebacks_amount', 0),
-                'adjustments_count': getattr(deposit, 'adjustments_count', 0),
-                'adjustments_amount': getattr(deposit, 'adjustments_amount', 0)
+                'sales_count': getattr(deposit, 'sales_total_count', None) or 0,
+                'sales_amount': self._amount(getattr(deposit, 'sales_total_amount', None)),
+                'refunds_count': getattr(deposit, 'refunds_total_count', None) or 0,
+                'refunds_amount': self._amount(getattr(deposit, 'refunds_total_amount', None)),
+                'chargebacks_count': getattr(deposit, 'chargeback_total_count', None) or 0,
+                'chargebacks_amount': self._amount(getattr(deposit, 'chargeback_total_amount', None)),
+                'adjustments_count': getattr(deposit, 'adjustment_total_count', None) or 0,
+                'adjustments_amount': self._amount(getattr(deposit, 'adjustment_total_amount', None))
             }
-        }
-
-    def _format_batch_list(self, batches: List[Any]) -> List[Dict[str, Any]]:
-        """Format batch list for API response"""
-        return [
-            {
-                'batch_id': getattr(b, 'batch_id', ''),
-                'sequence_number': getattr(b, 'sequence_number', ''),
-                'transaction_count': getattr(b, 'transaction_count', 0),
-                'total_amount': getattr(b, 'total_amount', 0),
-                'currency': getattr(b, 'currency', 'USD'),
-                'batch_status': getattr(b, 'batch_status', ''),
-                'close_time': str(getattr(b, 'close_time', '')),
-                'open_time': str(getattr(b, 'open_time', ''))
-            }
-            for b in batches
-        ]
-
-    def _generate_batch_summary(self, batches: List[Any]) -> Dict[str, Any]:
-        """Generate batch summary statistics"""
-        total_amount = sum(getattr(b, 'total_amount', 0) for b in batches)
-        total_transactions = sum(getattr(b, 'transaction_count', 0) for b in batches)
-
-        batch_statuses = {}
-        for batch in batches:
-            status = getattr(batch, 'batch_status', 'unknown')
-            batch_statuses[status] = batch_statuses.get(status, 0) + 1
-
-        return {
-            'total_batches': len(batches),
-            'total_amount': total_amount,
-            'total_transactions': total_transactions,
-            'average_batch_amount': total_amount / len(batches) if batches else 0,
-            'status_breakdown': batch_statuses
         }
 
     def _calculate_summary_stats(self, transactions: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -917,9 +877,9 @@ class GlobalPaymentsReportingService:
             timestamp = transaction.get('timestamp', '')
             if timestamp:
                 try:
-                    hour = datetime.strptime(str(timestamp)[:19], '%Y-%m-%d %H:%M:%S').strftime('%H')
+                    hour = datetime.fromisoformat(str(timestamp)).strftime('%H')
                     hourly_breakdown[hour] = hourly_breakdown.get(hour, 0) + 1
-                except:
+                except ValueError:
                     pass
 
             total_amount += transaction.get('amount', 0)
@@ -997,15 +957,17 @@ class GlobalPaymentsReportingService:
         csv_data = "Transaction ID,Timestamp,Amount,Currency,Status,Payment Method,Card Last Four,Auth Code,Reference Number\n"
 
         for transaction in transactions:
-            csv_data += f"{transaction.get('transaction_id', '')},"
-            csv_data += f"{transaction.get('timestamp', '')},"
-            csv_data += f"{transaction.get('amount', '')},"
-            csv_data += f"{transaction.get('currency', '')},"
-            csv_data += f"{transaction.get('status', '')},"
-            csv_data += f"{transaction.get('payment_method', '')},"
-            csv_data += f"{transaction.get('card_last_four', '')},"
-            csv_data += f"{transaction.get('auth_code', '')},"
-            csv_data += f"{transaction.get('reference_number', '')}\n"
+            csv_data += ','.join([
+                transaction.get('transaction_id', ''),
+                transaction.get('timestamp', ''),
+                f"{transaction.get('amount', 0):.2f}",
+                transaction.get('currency', ''),
+                transaction.get('status', ''),
+                transaction.get('payment_method', ''),
+                transaction.get('card_last_four', ''),
+                transaction.get('auth_code', ''),
+                transaction.get('reference_number', '')
+            ]) + '\n'
 
         return {
             'success': True,
@@ -1019,17 +981,15 @@ class GlobalPaymentsReportingService:
         """Export transaction data to XML format"""
         xml_data = '<?xml version="1.0" encoding="UTF-8"?>\n<transactions>\n'
 
+        fields = ['transaction_id', 'timestamp', 'amount', 'currency', 'status',
+                  'payment_method', 'card_last_four', 'auth_code', 'reference_number']
         for transaction in transactions:
             xml_data += '  <transaction>\n'
-            xml_data += f'    <transaction_id>{transaction.get("transaction_id", "")}</transaction_id>\n'
-            xml_data += f'    <timestamp>{transaction.get("timestamp", "")}</timestamp>\n'
-            xml_data += f'    <amount>{transaction.get("amount", "")}</amount>\n'
-            xml_data += f'    <currency>{transaction.get("currency", "")}</currency>\n'
-            xml_data += f'    <status>{transaction.get("status", "")}</status>\n'
-            xml_data += f'    <payment_method>{transaction.get("payment_method", "")}</payment_method>\n'
-            xml_data += f'    <card_last_four>{transaction.get("card_last_four", "")}</card_last_four>\n'
-            xml_data += f'    <auth_code>{transaction.get("auth_code", "")}</auth_code>\n'
-            xml_data += f'    <reference_number>{transaction.get("reference_number", "")}</reference_number>\n'
+            for field in fields:
+                value = transaction.get(field, '')
+                if field == 'amount':
+                    value = f'{value or 0:.2f}'
+                xml_data += f'    <{field}>{escape(str(value))}</{field}>\n'
             xml_data += '  </transaction>\n'
 
         xml_data += '</transactions>'
