@@ -1,64 +1,60 @@
 // Package main provides the core reporting service functionality for Global Payments.
-// This service class provides comprehensive reporting functionality including
-// search, filtering, dispute management, deposits, batches, and data export.
+// This service provides reporting functionality including search, filtering,
+// dispute management, deposits and data export, read from GP API.
 package main
 
 import (
 	"context"
 	"encoding/csv"
-	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/globalpayments/go-sdk/api"
-	"github.com/globalpayments/go-sdk/api/builders"
-	"github.com/globalpayments/go-sdk/api/entities/enums/channel"
-	"github.com/globalpayments/go-sdk/api/entities/enums/environment"
-	"github.com/globalpayments/go-sdk/api/entities/enums/paymenttype"
-	"github.com/globalpayments/go-sdk/api/entities/enums/transactionstatus"
-	"github.com/globalpayments/go-sdk/api/entities/reporting"
-	"github.com/globalpayments/go-sdk/api/serviceconfigs"
-	"github.com/joho/godotenv"
 )
+
+// validationError is a problem with the request, answered with VALIDATION_ERROR.
+type validationError struct{ message string }
+
+func (e *validationError) Error() string { return e.message }
+
+func newValidationError(format string, args ...interface{}) error {
+	return &validationError{message: fmt.Sprintf(format, args...)}
+}
+
+// reportError wraps a GP API error with the report that failed, answered with API_ERROR.
+func reportError(prefix string, err error) error {
+	var apiErr *gpAPIError
+	if errors.As(err, &apiErr) {
+		return &gpAPIError{Message: prefix + ": " + apiErr.Error()}
+	}
+	return err
+}
 
 // ReportingService provides methods for transaction reporting, searching, and data export
 type ReportingService struct {
-	isConfigured bool
+	client *gpAPIClient
 }
 
 // TransactionInfo represents formatted transaction data
 type TransactionInfo struct {
-	TransactionID   string  `json:"transaction_id" csv:"transaction_id" xml:"transaction_id"`
-	Timestamp       string  `json:"timestamp" csv:"timestamp" xml:"timestamp"`
-	Amount          float64 `json:"amount" csv:"amount" xml:"amount"`
-	Currency        string  `json:"currency" csv:"currency" xml:"currency"`
-	Status          string  `json:"status" csv:"status" xml:"status"`
-	PaymentMethod   string  `json:"payment_method" csv:"payment_method" xml:"payment_method"`
-	CardLastFour    string  `json:"card_last_four" csv:"card_last_four" xml:"card_last_four"`
-	AuthCode        string  `json:"auth_code" csv:"auth_code" xml:"auth_code"`
-	ReferenceNumber string  `json:"reference_number" csv:"reference_number" xml:"reference_number"`
+	XMLName         xml.Name `json:"-" xml:"transaction"`
+	TransactionID   string   `json:"transaction_id" xml:"transaction_id"`
+	Timestamp       string   `json:"timestamp" xml:"timestamp"`
+	Amount          float64  `json:"amount" xml:"amount"`
+	Currency        string   `json:"currency" xml:"currency"`
+	Status          string   `json:"status" xml:"status"`
+	PaymentMethod   string   `json:"payment_method" xml:"payment_method"`
+	CardLastFour    string   `json:"card_last_four" xml:"card_last_four"`
+	AuthCode        string   `json:"auth_code" xml:"auth_code"`
+	ReferenceNumber string   `json:"reference_number" xml:"reference_number"`
 }
 
-// TransactionDetails represents detailed transaction information
-type TransactionDetails struct {
-	TransactionID           string                 `json:"transaction_id"`
-	Timestamp               string                 `json:"timestamp"`
-	Amount                  float64                `json:"amount"`
-	Currency                string                 `json:"currency"`
-	Status                  string                 `json:"status"`
-	PaymentMethod           string                 `json:"payment_method"`
-	CardDetails             map[string]string      `json:"card_details"`
-	AuthCode                string                 `json:"auth_code"`
-	ReferenceNumber         string                 `json:"reference_number"`
-	GatewayResponseCode     string                 `json:"gateway_response_code"`
-	GatewayResponseMessage  string                 `json:"gateway_response_message"`
-}
-
-// SettlementInfo represents settlement data
+// SettlementInfo represents settlement data. GP API returns one settled
+// transaction per row, so each row counts one transaction.
 type SettlementInfo struct {
 	SettlementID     string  `json:"settlement_id"`
 	SettlementDate   string  `json:"settlement_date"`
@@ -70,734 +66,690 @@ type SettlementInfo struct {
 
 // DisputeInfo represents dispute data
 type DisputeInfo struct {
-	DisputeID           string  `json:"dispute_id"`
-	TransactionID       string  `json:"transaction_id"`
-	CaseNumber          string  `json:"case_number"`
-	DisputeStage        string  `json:"dispute_stage"`
-	DisputeStatus       string  `json:"dispute_status"`
-	CaseAmount          float64 `json:"case_amount"`
-	Currency            string  `json:"currency"`
-	ReasonCode          string  `json:"reason_code"`
-	ReasonDescription   string  `json:"reason_description"`
-	CaseTime            string  `json:"case_time"`
-	LastAdjustmentTime  string  `json:"last_adjustment_time"`
+	DisputeID          string  `json:"dispute_id"`
+	TransactionID      string  `json:"transaction_id"`
+	CaseNumber         string  `json:"case_number"`
+	DisputeStage       string  `json:"dispute_stage"`
+	DisputeStatus      string  `json:"dispute_status"`
+	CaseAmount         float64 `json:"case_amount"`
+	Currency           string  `json:"currency"`
+	ReasonCode         string  `json:"reason_code"`
+	ReasonDescription  string  `json:"reason_description"`
+	CaseTime           string  `json:"case_time"`
+	LastAdjustmentTime string  `json:"last_adjustment_time"`
 }
 
 // DepositInfo represents deposit data
 type DepositInfo struct {
-	DepositID        string  `json:"deposit_id"`
-	DepositDate      string  `json:"deposit_date"`
-	DepositReference string  `json:"deposit_reference"`
-	DepositStatus    string  `json:"deposit_status"`
-	DepositAmount    float64 `json:"deposit_amount"`
-	Currency         string  `json:"currency"`
-	MerchantNumber   string  `json:"merchant_number"`
-	MerchantHierarchy string `json:"merchant_hierarchy"`
-	SalesCount       int     `json:"sales_count"`
-	SalesAmount      float64 `json:"sales_amount"`
-	RefundsCount     int     `json:"refunds_count"`
-	RefundsAmount    float64 `json:"refunds_amount"`
+	DepositID         string  `json:"deposit_id"`
+	DepositDate       string  `json:"deposit_date"`
+	DepositReference  string  `json:"deposit_reference"`
+	DepositStatus     string  `json:"deposit_status"`
+	DepositAmount     float64 `json:"deposit_amount"`
+	Currency          string  `json:"currency"`
+	MerchantNumber    string  `json:"merchant_number"`
+	MerchantHierarchy string  `json:"merchant_hierarchy"`
+	SalesCount        int     `json:"sales_count"`
+	SalesAmount       float64 `json:"sales_amount"`
+	RefundsCount      int     `json:"refunds_count"`
+	RefundsAmount     float64 `json:"refunds_amount"`
 }
 
-// BatchInfo represents batch data
-type BatchInfo struct {
-	BatchID          string  `json:"batch_id"`
-	SequenceNumber   string  `json:"sequence_number"`
-	TransactionCount int     `json:"transaction_count"`
-	TotalAmount      float64 `json:"total_amount"`
-	Currency         string  `json:"currency"`
-	BatchStatus      string  `json:"batch_status"`
-	CloseTime        string  `json:"close_time"`
-	OpenTime         string  `json:"open_time"`
-}
-
-// Pagination represents pagination information
-type Pagination struct {
-	Page              int `json:"page"`
-	PageSize          int `json:"page_size"`
-	TotalCount        int `json:"total_count"`
-	OriginalTotalCount int `json:"original_total_count,omitempty"`
-}
-
-// NewReportingService creates a new reporting service instance
+// NewReportingService checks the GP API credentials and creates the service
 func NewReportingService() (*ReportingService, error) {
-	service := &ReportingService{}
-	if err := service.configureSDK(); err != nil {
-		return nil, fmt.Errorf("failed to configure SDK: %w", err)
-	}
-	service.isConfigured = true
-	return service, nil
-}
-
-// configureSDK initializes the Global Payments SDK for GP-API
-func (rs *ReportingService) configureSDK() error {
-	// Load environment variables
-	if err := godotenv.Load(); err != nil {
-		// Not a fatal error - env vars might be set externally
-	}
-
-	// Validate required environment variables
 	appID := os.Getenv("GP_API_APP_ID")
 	appKey := os.Getenv("GP_API_APP_KEY")
-
-	if appID == "" || appKey == "" {
-		return fmt.Errorf("missing required environment variables: GP_API_APP_ID and GP_API_APP_KEY")
+	if appID == "" {
+		return nil, newValidationError("Failed to configure SDK: Missing required environment variable: GP_API_APP_ID")
 	}
+	if appKey == "" {
+		return nil, newValidationError("Failed to configure SDK: Missing required environment variable: GP_API_APP_KEY")
+	}
+	return &ReportingService{client: newGPAPIClient(appID, appKey)}, nil
+}
 
-	// Configure GP-API
-	config := serviceconfigs.NewGpApiConfig()
-	config.AppId = appID
-	config.AppKey = appKey
-	config.Environment = environment.TEST // Change to PRODUCTION for live
-	config.Channel = channel.CardNotPresent
+func now() string {
+	return time.Now().Format("2006-01-02 15:04:05")
+}
 
-	return api.ConfigureService(config, "default")
+// setDateRange adds the GP API date filters for a YYYY-MM-DD start and end date
+func setDateRange(query url.Values, filters map[string]string, fromKey, toKey string) {
+	if v := filters["start_date"]; v != "" {
+		query.Set(fromKey, v)
+	}
+	if v := filters["end_date"]; v != "" {
+		query.Set(toKey, v)
+	}
+}
+
+func setPaging(query url.Values, page, pageSize int) {
+	query.Set("page", strconv.Itoa(page))
+	query.Set("page_size", strconv.Itoa(pageSize))
 }
 
 // SearchTransactions searches transactions with filters and pagination
-func (rs *ReportingService) SearchTransactions(filters map[string]interface{}) (map[string]interface{}, error) {
-	if !rs.isConfigured {
-		return nil, fmt.Errorf("SDK is not properly configured")
+func (rs *ReportingService) SearchTransactions(ctx context.Context, filters map[string]string) (map[string]interface{}, error) {
+	page := intValue(filters, "page", 1)
+	pageSize := intValue(filters, "page_size", 10)
+
+	query := url.Values{}
+	setPaging(query, page, pageSize)
+	setDateRange(query, filters, "from_time_created", "to_time_created")
+
+	if v := filters["transaction_id"]; v != "" {
+		query.Set("id", v)
+	}
+	if v := filters["payment_type"]; v != "" {
+		paymentType, ok := map[string]string{"sale": "SALE", "refund": "REFUND"}[strings.ToLower(v)]
+		if !ok {
+			return nil, newValidationError("Invalid payment_type. Supported values: sale, refund")
+		}
+		query.Set("type", paymentType)
+	}
+	if v := filters["card_last_four"]; v != "" {
+		query.Set("number_last4", v)
 	}
 
-	ctx := context.Background()
-
-	// Extract pagination parameters
-	page := getIntValue(filters, "page", 1)
-	pageSize := getIntValue(filters, "page_size", 10)
-	if pageSize > 100 {
-		pageSize = 100
+	var resp struct {
+		gpPage
+		Transactions []gpTransaction `json:"transactions"`
+	}
+	if err := rs.client.get(ctx, "/transactions", query, &resp); err != nil {
+		return nil, reportError("Transaction search failed", err)
 	}
 
-	// Build search criteria
-	searchBuilder := builders.NewReportBuilder(builders.TransactionReportType)
-	searchBuilder.WithPaging(page, pageSize)
+	transactions := make([]TransactionInfo, 0, len(resp.Transactions))
+	for _, t := range resp.Transactions {
+		transactions = append(transactions, formatTransaction(t))
+	}
 
-	// Apply date range filters
-	if startDate, ok := filters["start_date"].(string); ok && startDate != "" {
-		if date, err := time.Parse("2006-01-02", startDate); err == nil {
-			searchBuilder.WithStartDate(date)
+	// GP API only filters on an exact amount, so the range is applied here
+	if v := filters["amount_min"]; v != "" {
+		if min, err := strconv.ParseFloat(v, 64); err == nil {
+			transactions = filterTransactions(transactions, func(t TransactionInfo) bool { return t.Amount >= min })
+		}
+	}
+	if v := filters["amount_max"]; v != "" {
+		if max, err := strconv.ParseFloat(v, 64); err == nil {
+			transactions = filterTransactions(transactions, func(t TransactionInfo) bool { return t.Amount <= max })
 		}
 	}
 
-	if endDate, ok := filters["end_date"].(string); ok && endDate != "" {
-		if date, err := time.Parse("2006-01-02", endDate); err == nil {
-			searchBuilder.WithEndDate(date)
-		}
-	}
-
-	// Apply transaction ID filter
-	if txnID, ok := filters["transaction_id"].(string); ok && txnID != "" {
-		searchBuilder.WithTransactionId(txnID)
-	}
-
-	// Apply payment type filter
-	if paymentTypeStr, ok := filters["payment_type"].(string); ok && paymentTypeStr != "" {
-		if pt := mapPaymentType(paymentTypeStr); pt != "" {
-			searchBuilder.WithPaymentType(paymenttype.PaymentType(pt))
-		}
-	}
-
-	// Apply amount range filters
-	if amountMin, ok := filters["amount_min"].(string); ok && amountMin != "" {
-		if amt, err := strconv.ParseFloat(amountMin, 64); err == nil {
-			searchBuilder.WithAmount(fmt.Sprintf("%.2f", amt))
-		}
-	}
-
-	if amountMax, ok := filters["amount_max"].(string); ok && amountMax != "" {
-		if amt, err := strconv.ParseFloat(amountMax, 64); err == nil {
-			searchBuilder.WithAmount(fmt.Sprintf("%.2f", amt))
-		}
-	}
-
-	// Apply card last four filter
-	if cardLastFour, ok := filters["card_last_four"].(string); ok && cardLastFour != "" {
-		searchBuilder.WithCardNumberLastFour(cardLastFour)
-	}
-
-	// Execute search
-	response, err := api.ExecuteGateway[reporting.PagedResult](ctx, searchBuilder)
-	if err != nil {
-		return nil, fmt.Errorf("transaction search failed: %w", err)
-	}
-
-	// Format transaction list
-	transactions := formatTransactionList(response.Results)
-
-	// Apply client-side status filtering if needed
-	if status, ok := filters["status"].(string); ok && status != "" {
-		transactions = filterByStatus(transactions, strings.ToUpper(status))
+	// Status is not a search filter in this sample, it is applied to the page
+	if v := filters["status"]; v != "" {
+		status := strings.ToUpper(v)
+		transactions = filterTransactions(transactions, func(t TransactionInfo) bool { return strings.ToUpper(t.Status) == status })
 	}
 
 	return map[string]interface{}{
 		"success": true,
 		"data": map[string]interface{}{
 			"transactions": transactions,
-			"pagination": Pagination{
-				Page:               page,
-				PageSize:           pageSize,
-				TotalCount:         len(transactions),
-				OriginalTotalCount: response.TotalRecordCount,
+			"pagination": map[string]interface{}{
+				"page":                 page,
+				"page_size":            pageSize,
+				"total_count":          len(transactions),
+				"original_total_count": resp.total(),
 			},
 		},
-		"timestamp": time.Now().Format("2006-01-02 15:04:05"),
+		"timestamp": now(),
 	}, nil
 }
 
 // GetTransactionDetails retrieves detailed information for a specific transaction
-func (rs *ReportingService) GetTransactionDetails(transactionID string) (map[string]interface{}, error) {
-	if !rs.isConfigured {
-		return nil, fmt.Errorf("SDK is not properly configured")
+func (rs *ReportingService) GetTransactionDetails(ctx context.Context, transactionID string) (map[string]interface{}, error) {
+	var t gpTransaction
+	if err := rs.client.get(ctx, "/transactions/"+url.PathEscape(transactionID), nil, &t); err != nil {
+		return nil, reportError("Failed to retrieve transaction details", err)
 	}
 
-	ctx := context.Background()
-
-	searchBuilder := builders.NewReportBuilder(builders.TransactionReportType)
-	searchBuilder.WithTransactionId(transactionID)
-
-	response, err := api.ExecuteGateway[reporting.TransactionSummary](ctx, searchBuilder)
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve transaction details: %w", err)
+	info := formatTransaction(t)
+	details := map[string]interface{}{
+		"transaction_id": info.TransactionID,
+		"timestamp":      info.Timestamp,
+		"amount":         info.Amount,
+		"currency":       info.Currency,
+		"status":         info.Status,
+		"payment_method": info.PaymentMethod,
+		"card_details": map[string]string{
+			"masked_number": info.CardLastFour,
+			"card_type":     "",
+			"entry_mode":    "",
+		},
+		"auth_code":                info.AuthCode,
+		"reference_number":         info.ReferenceNumber,
+		"gateway_response_code":    "",
+		"gateway_response_message": "",
 	}
-
-	details := formatTransactionDetails(response)
+	if pm := t.PaymentMethod; pm != nil {
+		cardDetails := details["card_details"].(map[string]string)
+		cardDetails["entry_mode"] = pm.EntryMode
+		if pm.Card != nil {
+			cardDetails["card_type"] = pm.Card.Brand
+		}
+		details["gateway_response_message"] = pm.Message
+	}
 
 	return map[string]interface{}{
 		"success":   true,
 		"data":      details,
-		"timestamp": time.Now().Format("2006-01-02 15:04:05"),
+		"timestamp": now(),
 	}, nil
 }
 
 // GetSettlementReport generates settlement report for a date range
-func (rs *ReportingService) GetSettlementReport(params map[string]interface{}) (map[string]interface{}, error) {
-	if !rs.isConfigured {
-		return nil, fmt.Errorf("SDK is not properly configured")
-	}
+func (rs *ReportingService) GetSettlementReport(ctx context.Context, params map[string]string) (map[string]interface{}, error) {
+	page := intValue(params, "page", 1)
+	pageSize := intValue(params, "page_size", 50)
 
-	ctx := context.Background()
-
-	page := getIntValue(params, "page", 1)
-	pageSize := getIntValue(params, "page_size", 50)
-	if pageSize > 100 {
-		pageSize = 100
-	}
-
-	searchBuilder := builders.NewReportBuilder(builders.SettlementReportType)
-	searchBuilder.WithPaging(page, pageSize)
-
-	// Apply date range
-	if startDate, ok := params["start_date"].(string); ok && startDate != "" {
-		if date, err := time.Parse("2006-01-02", startDate); err == nil {
-			searchBuilder.WithStartDate(date)
-		}
-	}
-
-	if endDate, ok := params["end_date"].(string); ok && endDate != "" {
-		if date, err := time.Parse("2006-01-02", endDate); err == nil {
-			searchBuilder.WithEndDate(date)
-		}
-	}
-
-	response, err := api.ExecuteGateway[reporting.PagedResult](ctx, searchBuilder)
+	accountID, accountName, err := rs.client.dataAccount(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("settlement report generation failed: %w", err)
+		return nil, reportError("Settlement report generation failed", err)
 	}
 
-	settlements := formatSettlementList(response.Results)
-	summary := generateSettlementSummary(settlements)
+	query := url.Values{}
+	setPaging(query, page, pageSize)
+	setDateRange(query, params, "from_time_created", "to_time_created")
+	setDataAccount(query, accountID, accountName)
+
+	var resp struct {
+		gpPage
+		Transactions []gpTransaction `json:"transactions"`
+	}
+	if err := rs.client.get(ctx, "/settlement/transactions", query, &resp); err != nil {
+		return nil, reportError("Settlement report generation failed", err)
+	}
+
+	settlements := make([]SettlementInfo, 0, len(resp.Transactions))
+	for _, t := range resp.Transactions {
+		date := t.DepositTimeCreated
+		if date == "" {
+			date = t.TimeCreated
+		}
+		settlements = append(settlements, SettlementInfo{
+			SettlementID:     t.ID,
+			SettlementDate:   date,
+			TransactionCount: 1,
+			TotalAmount:      float64(t.Amount),
+			Currency:         currencyOr(t.Currency),
+			Status:           t.Status,
+		})
+	}
 
 	return map[string]interface{}{
 		"success": true,
 		"data": map[string]interface{}{
 			"settlements": settlements,
-			"summary":     summary,
-			"pagination": Pagination{
-				Page:       page,
-				PageSize:   pageSize,
-				TotalCount: response.TotalRecordCount,
+			"summary":     generateSettlementSummary(settlements),
+			"pagination": map[string]interface{}{
+				"page":        page,
+				"page_size":   pageSize,
+				"total_count": resp.total(),
 			},
 		},
-		"timestamp": time.Now().Format("2006-01-02 15:04:05"),
+		"timestamp": now(),
 	}, nil
 }
 
 // GetDisputeReport retrieves dispute reports with filtering and pagination
-func (rs *ReportingService) GetDisputeReport(filters map[string]interface{}) (map[string]interface{}, error) {
-	if !rs.isConfigured {
-		return nil, fmt.Errorf("SDK is not properly configured")
+func (rs *ReportingService) GetDisputeReport(ctx context.Context, filters map[string]string) (map[string]interface{}, error) {
+	page := intValue(filters, "page", 1)
+	pageSize := intValue(filters, "page_size", 10)
+
+	query := url.Values{}
+	setPaging(query, page, pageSize)
+	setDateRange(query, filters, "from_stage_time_created", "to_stage_time_created")
+	if v := filters["stage"]; v != "" {
+		query.Set("stage", strings.ToUpper(v))
+	}
+	if v := filters["status"]; v != "" {
+		query.Set("status", strings.ToUpper(v))
 	}
 
-	ctx := context.Background()
-
-	page := getIntValue(filters, "page", 1)
-	pageSize := getIntValue(filters, "page_size", 10)
-	if pageSize > 100 {
-		pageSize = 100
+	var resp struct {
+		gpPage
+		Disputes []gpDispute `json:"disputes"`
+	}
+	if err := rs.client.get(ctx, "/disputes", query, &resp); err != nil {
+		return nil, reportError("Dispute report generation failed", err)
 	}
 
-	searchBuilder := builders.NewReportBuilder(builders.DisputeReportType)
-	searchBuilder.WithPaging(page, pageSize)
-
-	// Apply date range filters
-	if startDate, ok := filters["start_date"].(string); ok && startDate != "" {
-		if date, err := time.Parse("2006-01-02", startDate); err == nil {
-			searchBuilder.WithStartDate(date)
-		}
+	disputes := make([]DisputeInfo, 0, len(resp.Disputes))
+	for _, d := range resp.Disputes {
+		disputes = append(disputes, formatDispute(d))
 	}
-
-	if endDate, ok := filters["end_date"].(string); ok && endDate != "" {
-		if date, err := time.Parse("2006-01-02", endDate); err == nil {
-			searchBuilder.WithEndDate(date)
-		}
-	}
-
-	// Apply dispute stage filter
-	if stage, ok := filters["stage"].(string); ok && stage != "" {
-		searchBuilder.WithDisputeStage(stage)
-	}
-
-	// Apply dispute status filter
-	if status, ok := filters["status"].(string); ok && status != "" {
-		searchBuilder.WithDisputeStatus(status)
-	}
-
-	response, err := api.ExecuteGateway[reporting.PagedResult](ctx, searchBuilder)
-	if err != nil {
-		return nil, fmt.Errorf("dispute report generation failed: %w", err)
-	}
-
-	disputes := formatDisputeList(response.Results)
 
 	return map[string]interface{}{
 		"success": true,
 		"data": map[string]interface{}{
 			"disputes": disputes,
-			"pagination": Pagination{
-				Page:       page,
-				PageSize:   pageSize,
-				TotalCount: response.TotalRecordCount,
+			"pagination": map[string]interface{}{
+				"page":        page,
+				"page_size":   pageSize,
+				"total_count": resp.total(),
 			},
 		},
-		"timestamp": time.Now().Format("2006-01-02 15:04:05"),
+		"timestamp": now(),
 	}, nil
 }
 
 // GetDisputeDetails retrieves detailed information for a specific dispute
-func (rs *ReportingService) GetDisputeDetails(disputeID string) (map[string]interface{}, error) {
-	if !rs.isConfigured {
-		return nil, fmt.Errorf("SDK is not properly configured")
+func (rs *ReportingService) GetDisputeDetails(ctx context.Context, disputeID string) (map[string]interface{}, error) {
+	var d gpDispute
+	if err := rs.client.get(ctx, "/disputes/"+url.PathEscape(disputeID), nil, &d); err != nil {
+		return nil, reportError("Failed to retrieve dispute details", err)
 	}
 
-	ctx := context.Background()
-
-	searchBuilder := builders.NewReportBuilder(builders.DisputeReportType)
-	searchBuilder.WithDisputeId(disputeID)
-
-	response, err := api.ExecuteGateway[reporting.DisputeSummary](ctx, searchBuilder)
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve dispute details: %w", err)
+	info := formatDispute(d)
+	documents := make([]map[string]string, 0, len(d.Documents))
+	for _, doc := range d.Documents {
+		if doc.ID != "" {
+			documents = append(documents, map[string]string{"id": doc.ID, "type": doc.Type})
+		}
 	}
 
-	details := formatDisputeDetails(response)
+	transactionDetails := map[string]interface{}{
+		"amount":             0.0,
+		"currency":           "USD",
+		"masked_card_number": "",
+		"arn":                "",
+	}
+	if card := disputeCard(d); card != nil {
+		transactionDetails["arn"] = card.ARN
+		transactionDetails["masked_card_number"] = card.Number
+	}
+	if t := d.Transaction; t != nil {
+		transactionDetails["amount"] = float64(t.Amount)
+		transactionDetails["currency"] = currencyOr(t.Currency)
+		if t.PaymentMethod != nil && t.PaymentMethod.Card != nil {
+			transactionDetails["masked_card_number"] = t.PaymentMethod.Card.MaskedNumberFirst6Last4
+		}
+	}
 
 	return map[string]interface{}{
-		"success":   true,
-		"data":      details,
-		"timestamp": time.Now().Format("2006-01-02 15:04:05"),
+		"success": true,
+		"data": map[string]interface{}{
+			"dispute_id":           info.DisputeID,
+			"transaction_id":       info.TransactionID,
+			"case_number":          info.CaseNumber,
+			"dispute_stage":        info.DisputeStage,
+			"dispute_status":       info.DisputeStatus,
+			"case_amount":          info.CaseAmount,
+			"currency":             info.Currency,
+			"reason_code":          info.ReasonCode,
+			"reason_description":   info.ReasonDescription,
+			"case_time":            info.CaseTime,
+			"last_adjustment_time": info.LastAdjustmentTime,
+			"case_description":     d.Description,
+			"documents":            documents,
+			"transaction_details":  transactionDetails,
+		},
+		"timestamp": now(),
 	}, nil
 }
 
 // GetDepositReport retrieves deposit reports with filtering and pagination
-func (rs *ReportingService) GetDepositReport(filters map[string]interface{}) (map[string]interface{}, error) {
-	if !rs.isConfigured {
-		return nil, fmt.Errorf("SDK is not properly configured")
-	}
+func (rs *ReportingService) GetDepositReport(ctx context.Context, filters map[string]string) (map[string]interface{}, error) {
+	page := intValue(filters, "page", 1)
+	pageSize := intValue(filters, "page_size", 10)
 
-	ctx := context.Background()
-
-	page := getIntValue(filters, "page", 1)
-	pageSize := getIntValue(filters, "page_size", 10)
-	if pageSize > 100 {
-		pageSize = 100
-	}
-
-	searchBuilder := builders.NewReportBuilder(builders.DepositReportType)
-	searchBuilder.WithPaging(page, pageSize)
-
-	// Apply date range filters
-	if startDate, ok := filters["start_date"].(string); ok && startDate != "" {
-		if date, err := time.Parse("2006-01-02", startDate); err == nil {
-			searchBuilder.WithStartDate(date)
-		}
-	}
-
-	if endDate, ok := filters["end_date"].(string); ok && endDate != "" {
-		if date, err := time.Parse("2006-01-02", endDate); err == nil {
-			searchBuilder.WithEndDate(date)
-		}
-	}
-
-	// Apply deposit ID filter
-	if depositID, ok := filters["deposit_id"].(string); ok && depositID != "" {
-		searchBuilder.WithDepositReference(depositID)
-	}
-
-	// Apply status filter
-	if status, ok := filters["status"].(string); ok && status != "" {
-		searchBuilder.WithDepositStatus(status)
-	}
-
-	response, err := api.ExecuteGateway[reporting.PagedResult](ctx, searchBuilder)
+	accountID, accountName, err := rs.client.dataAccount(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("deposit report generation failed: %w", err)
+		return nil, reportError("Deposit report generation failed", err)
 	}
 
-	deposits := formatDepositList(response.Results)
+	query := url.Values{}
+	setPaging(query, page, pageSize)
+	setDateRange(query, filters, "from_time_created", "to_time_created")
+	setDataAccount(query, accountID, accountName)
+	if v := filters["deposit_id"]; v != "" {
+		query.Set("id", v)
+	}
+	if v := filters["status"]; v != "" {
+		query.Set("status", strings.ToUpper(v))
+	}
+
+	var resp struct {
+		gpPage
+		Deposits []gpDeposit `json:"deposits"`
+	}
+	if err := rs.client.get(ctx, "/settlement/deposits", query, &resp); err != nil {
+		return nil, reportError("Deposit report generation failed", err)
+	}
+
+	deposits := make([]DepositInfo, 0, len(resp.Deposits))
+	for _, d := range resp.Deposits {
+		deposits = append(deposits, formatDeposit(d))
+	}
 
 	return map[string]interface{}{
 		"success": true,
 		"data": map[string]interface{}{
 			"deposits": deposits,
-			"pagination": Pagination{
-				Page:       page,
-				PageSize:   pageSize,
-				TotalCount: response.TotalRecordCount,
+			"pagination": map[string]interface{}{
+				"page":        page,
+				"page_size":   pageSize,
+				"total_count": resp.total(),
 			},
 		},
-		"timestamp": time.Now().Format("2006-01-02 15:04:05"),
+		"timestamp": now(),
 	}, nil
 }
 
 // GetDepositDetails retrieves detailed information for a specific deposit
-func (rs *ReportingService) GetDepositDetails(depositID string) (map[string]interface{}, error) {
-	if !rs.isConfigured {
-		return nil, fmt.Errorf("SDK is not properly configured")
+func (rs *ReportingService) GetDepositDetails(ctx context.Context, depositID string) (map[string]interface{}, error) {
+	var d gpDeposit
+	if err := rs.client.get(ctx, "/settlement/deposits/"+url.PathEscape(depositID), nil, &d); err != nil {
+		return nil, reportError("Failed to retrieve deposit details", err)
 	}
 
-	ctx := context.Background()
-
-	searchBuilder := builders.NewReportBuilder(builders.DepositReportType)
-	searchBuilder.WithDepositReference(depositID)
-
-	response, err := api.ExecuteGateway[reporting.DepositSummary](ctx, searchBuilder)
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve deposit details: %w", err)
-	}
-
-	details := formatDepositDetails(response)
-
-	return map[string]interface{}{
-		"success":   true,
-		"data":      details,
-		"timestamp": time.Now().Format("2006-01-02 15:04:05"),
-	}, nil
-}
-
-// GetBatchReport retrieves batch report with detailed transaction information
-func (rs *ReportingService) GetBatchReport(filters map[string]interface{}) (map[string]interface{}, error) {
-	if !rs.isConfigured {
-		return nil, fmt.Errorf("SDK is not properly configured")
-	}
-
-	ctx := context.Background()
-
-	searchBuilder := builders.NewReportBuilder(builders.BatchReportType)
-
-	// Apply date range filters
-	if startDate, ok := filters["start_date"].(string); ok && startDate != "" {
-		if date, err := time.Parse("2006-01-02", startDate); err == nil {
-			searchBuilder.WithStartDate(date)
+	info := formatDeposit(d)
+	bankAccount := map[string]string{"masked_account_number": "", "bank_name": ""}
+	if b := d.BankTransfer; b != nil {
+		bankAccount["masked_account_number"] = b.MaskedAccountNumberLast4
+		if b.Bank != nil {
+			bankAccount["bank_name"] = b.Bank.Name
 		}
 	}
-
-	if endDate, ok := filters["end_date"].(string); ok && endDate != "" {
-		if date, err := time.Parse("2006-01-02", endDate); err == nil {
-			searchBuilder.WithEndDate(date)
-		}
-	}
-
-	response, err := api.ExecuteGateway[reporting.PagedResult](ctx, searchBuilder)
-	if err != nil {
-		return nil, fmt.Errorf("batch report generation failed: %w", err)
-	}
-
-	batches := formatBatchList(response.Results)
-	summary := generateBatchSummary(batches)
 
 	return map[string]interface{}{
 		"success": true,
 		"data": map[string]interface{}{
-			"batches": batches,
-			"summary": summary,
+			"deposit_id":         info.DepositID,
+			"deposit_date":       info.DepositDate,
+			"deposit_reference":  info.DepositReference,
+			"deposit_status":     info.DepositStatus,
+			"deposit_amount":     info.DepositAmount,
+			"currency":           info.Currency,
+			"merchant_number":    info.MerchantNumber,
+			"merchant_hierarchy": info.MerchantHierarchy,
+			"bank_account":       bankAccount,
+			"transaction_summary": map[string]interface{}{
+				"sales_count":        d.Sales.Count,
+				"sales_amount":       float64(d.Sales.Amount),
+				"refunds_count":      d.Refunds.Count,
+				"refunds_amount":     float64(d.Refunds.Amount),
+				"chargebacks_count":  d.Disputes.Chargebacks.Count,
+				"chargebacks_amount": float64(d.Disputes.Chargebacks.Amount),
+				"adjustments_count":  d.Disputes.Reversals.Count,
+				"adjustments_amount": float64(d.Disputes.Reversals.Amount),
+			},
 		},
-		"timestamp": time.Now().Format("2006-01-02 15:04:05"),
+		"timestamp": now(),
 	}, nil
+}
+
+// GetBatchReport answers the batch report. GP API has no batch report
+// endpoint, so this gives the same API error as the Node.js and PHP services.
+func (rs *ReportingService) GetBatchReport(ctx context.Context, filters map[string]string) (map[string]interface{}, error) {
+	return nil, &gpAPIError{Message: "Batch report generation failed: batch reports are not available through GP API"}
 }
 
 // GetDeclinedTransactionsReport retrieves declined transactions report
-func (rs *ReportingService) GetDeclinedTransactionsReport(filters map[string]interface{}) (map[string]interface{}, error) {
-	// Use transaction search with declined status filter
-	filters["status"] = "DECLINED"
-	result, err := rs.SearchTransactions(filters)
+func (rs *ReportingService) GetDeclinedTransactionsReport(ctx context.Context, filters map[string]string) (map[string]interface{}, error) {
+	declineFilters := copyFilters(filters)
+	declineFilters["status"] = "DECLINED"
+
+	result, err := rs.SearchTransactions(ctx, declineFilters)
 	if err != nil {
-		return nil, fmt.Errorf("declined transactions report generation failed: %w", err)
-	}
-
-	// Add decline analysis
-	if result["success"] == true {
-		data := result["data"].(map[string]interface{})
-		transactions := data["transactions"].([]TransactionInfo)
-		data["decline_analysis"] = analyzeDeclines(transactions)
-	}
-
-	return result, nil
-}
-
-// GetDateRangeReport generates comprehensive date range report across all transaction types
-func (rs *ReportingService) GetDateRangeReport(params map[string]interface{}) (map[string]interface{}, error) {
-	if !rs.isConfigured {
-		return nil, fmt.Errorf("SDK is not properly configured")
-	}
-
-	startDate := getStringValue(params, "start_date", time.Now().AddDate(0, 0, -30).Format("2006-01-02"))
-	endDate := getStringValue(params, "end_date", time.Now().Format("2006-01-02"))
-
-	report := map[string]interface{}{
-		"success": true,
-		"data": map[string]interface{}{
-			"period": map[string]string{
-				"start_date": startDate,
-				"end_date":   endDate,
-			},
-			"transactions": map[string]interface{}{},
-			"settlements":  map[string]interface{}{},
-			"disputes":     map[string]interface{}{},
-			"deposits":     map[string]interface{}{},
-			"summary":      map[string]interface{}{},
-		},
-		"timestamp": time.Now().Format("2006-01-02 15:04:05"),
-	}
-
-	data := report["data"].(map[string]interface{})
-
-	// Get transactions for the period
-	transactionResult, err := rs.SearchTransactions(map[string]interface{}{
-		"start_date": startDate,
-		"end_date":   endDate,
-		"page_size":  getIntValue(params, "transaction_limit", 100),
-	})
-	if err == nil && transactionResult["success"] == true {
-		data["transactions"] = transactionResult["data"]
-	}
-
-	// Get settlements for the period
-	settlementResult, err := rs.GetSettlementReport(map[string]interface{}{
-		"start_date": startDate,
-		"end_date":   endDate,
-		"page_size":  getIntValue(params, "settlement_limit", 50),
-	})
-	if err == nil && settlementResult["success"] == true {
-		data["settlements"] = settlementResult["data"]
-	}
-
-	// Get disputes for the period
-	disputeResult, err := rs.GetDisputeReport(map[string]interface{}{
-		"start_date": startDate,
-		"end_date":   endDate,
-		"page_size":  getIntValue(params, "dispute_limit", 25),
-	})
-	if err == nil {
-		data["disputes"] = disputeResult["data"]
-	} else {
-		data["disputes"] = map[string]string{"error": fmt.Sprintf("Disputes not available: %v", err)}
-	}
-
-	// Get deposits for the period
-	depositResult, err := rs.GetDepositReport(map[string]interface{}{
-		"start_date": startDate,
-		"end_date":   endDate,
-		"page_size":  getIntValue(params, "deposit_limit", 25),
-	})
-	if err == nil {
-		data["deposits"] = depositResult["data"]
-	} else {
-		data["deposits"] = map[string]string{"error": fmt.Sprintf("Deposits not available: %v", err)}
-	}
-
-	// Generate comprehensive summary
-	data["summary"] = generateComprehensiveSummary(data)
-
-	return report, nil
-}
-
-// ExportTransactions exports transaction data in specified format
-func (rs *ReportingService) ExportTransactions(filters map[string]interface{}, format string) (map[string]interface{}, error) {
-	if !rs.isConfigured {
-		return nil, fmt.Errorf("SDK is not properly configured")
-	}
-
-	// Get all transactions (increase limit for export)
-	filters["page_size"] = 1000
-	result, err := rs.SearchTransactions(filters)
-	if err != nil {
-		return nil, fmt.Errorf("export failed: %w", err)
+		return nil, reportError("Declined transactions report generation failed", err)
 	}
 
 	data := result["data"].(map[string]interface{})
-	transactions := data["transactions"].([]TransactionInfo)
+	data["decline_analysis"] = analyzeDeclines(data["transactions"].([]TransactionInfo))
+	return result, nil
+}
+
+// GetDateRangeReport generates a report across transactions, settlements, disputes and deposits
+func (rs *ReportingService) GetDateRangeReport(ctx context.Context, params map[string]string) (map[string]interface{}, error) {
+	startDate := stringValue(params, "start_date", time.Now().AddDate(0, 0, -30).Format("2006-01-02"))
+	endDate := stringValue(params, "end_date", time.Now().Format("2006-01-02"))
+	period := map[string]string{"start_date": startDate, "end_date": endDate}
+
+	data := map[string]interface{}{
+		"period":       period,
+		"transactions": map[string]interface{}{},
+		"settlements":  map[string]interface{}{},
+		"disputes":     map[string]interface{}{},
+		"deposits":     map[string]interface{}{},
+		"summary":      map[string]interface{}{},
+	}
+
+	sections := []struct {
+		key   string
+		label string
+		limit string
+		def   int
+		run   func(context.Context, map[string]string) (map[string]interface{}, error)
+	}{
+		{"transactions", "Transactions", "transaction_limit", 100, rs.SearchTransactions},
+		{"settlements", "Settlements", "settlement_limit", 50, rs.GetSettlementReport},
+		{"disputes", "Disputes", "dispute_limit", 25, rs.GetDisputeReport},
+		{"deposits", "Deposits", "deposit_limit", 25, rs.GetDepositReport},
+	}
+	for _, section := range sections {
+		result, err := section.run(ctx, map[string]string{
+			"start_date": startDate,
+			"end_date":   endDate,
+			"page_size":  strconv.Itoa(intValue(params, section.limit, section.def)),
+		})
+		if err != nil {
+			var apiErr *gpAPIError
+			if errors.As(err, &apiErr) {
+				data[section.key] = map[string]string{"error": fmt.Sprintf("%s not available: %s", section.label, err)}
+			} else {
+				logError(section.label+" not available for the date range report", err)
+				data[section.key] = map[string]string{"error": section.label + " not available"}
+			}
+			continue
+		}
+		data[section.key] = result["data"]
+	}
+
+	data["summary"] = generateComprehensiveSummary(data)
+
+	return map[string]interface{}{
+		"success":   true,
+		"data":      data,
+		"timestamp": now(),
+	}, nil
+}
+
+// ExportTransactions exports transaction data in specified format
+func (rs *ReportingService) ExportTransactions(ctx context.Context, filters map[string]string, format string) (map[string]interface{}, error) {
+	exportFilters := copyFilters(filters)
+	// GP API pages hold up to 1000 transactions
+	exportFilters["page_size"] = "1000"
+
+	result, err := rs.SearchTransactions(ctx, exportFilters)
+	if err != nil {
+		return nil, reportError("Export failed", err)
+	}
+	transactions := result["data"].(map[string]interface{})["transactions"].([]TransactionInfo)
 
 	switch format {
 	case "csv":
 		return exportToCSV(transactions)
 	case "xml":
 		return exportToXML(transactions)
-	default: // json
+	default:
 		return map[string]interface{}{
 			"success":   true,
 			"data":      transactions,
 			"format":    "json",
-			"timestamp": time.Now().Format("2006-01-02 15:04:05"),
+			"timestamp": now(),
 		}, nil
 	}
 }
 
 // GetSummaryStats generates summary statistics
-func (rs *ReportingService) GetSummaryStats(params map[string]interface{}) (map[string]interface{}, error) {
-	if !rs.isConfigured {
-		return nil, fmt.Errorf("SDK is not properly configured")
-	}
+func (rs *ReportingService) GetSummaryStats(ctx context.Context, params map[string]string) (map[string]interface{}, error) {
+	startDate := stringValue(params, "start_date", time.Now().AddDate(0, 0, -30).Format("2006-01-02"))
+	endDate := stringValue(params, "end_date", time.Now().Format("2006-01-02"))
 
-	startDate := getStringValue(params, "start_date", time.Now().AddDate(0, 0, -30).Format("2006-01-02"))
-	endDate := getStringValue(params, "end_date", time.Now().Format("2006-01-02"))
-
-	// Get transaction summary
-	result, err := rs.SearchTransactions(map[string]interface{}{
+	result, err := rs.SearchTransactions(ctx, map[string]string{
 		"start_date": startDate,
 		"end_date":   endDate,
-		"page_size":  1000,
+		"page_size":  "1000",
 	})
 	if err != nil {
+		message := "Failed to generate summary statistics"
+		var apiErr *gpAPIError
+		if errors.As(err, &apiErr) {
+			message += ": " + err.Error()
+		} else {
+			logError(message, err)
+		}
 		return map[string]interface{}{
 			"success":   false,
-			"error":     fmt.Sprintf("Failed to generate summary statistics: %v", err),
-			"timestamp": time.Now().Format("2006-01-02 15:04:05"),
-		}, err
+			"error":     message,
+			"timestamp": now(),
+		}, nil
 	}
 
-	data := result["data"].(map[string]interface{})
-	transactions := data["transactions"].([]TransactionInfo)
-	stats := calculateSummaryStats(transactions)
-
+	transactions := result["data"].(map[string]interface{})["transactions"].([]TransactionInfo)
 	return map[string]interface{}{
 		"success": true,
-		"data":    stats,
+		"data":    calculateSummaryStats(transactions),
 		"period": map[string]string{
 			"start_date": startDate,
 			"end_date":   endDate,
 		},
-		"timestamp": time.Now().Format("2006-01-02 15:04:05"),
+		"timestamp": now(),
 	}, nil
 }
 
 // Helper functions
 
-func getIntValue(m map[string]interface{}, key string, defaultValue int) int {
-	if val, ok := m[key]; ok {
-		switch v := val.(type) {
-		case int:
-			return v
-		case float64:
-			return int(v)
-		case string:
-			if i, err := strconv.Atoi(v); err == nil {
-				return i
-			}
-		}
+func intValue(m map[string]string, key string, defaultValue int) int {
+	if i, err := strconv.Atoi(m[key]); err == nil && i > 0 {
+		return i
 	}
 	return defaultValue
 }
 
-func getStringValue(m map[string]interface{}, key string, defaultValue string) string {
-	if val, ok := m[key]; ok {
-		if str, ok := val.(string); ok {
-			return str
-		}
+func stringValue(m map[string]string, key string, defaultValue string) string {
+	if v := m[key]; v != "" {
+		return v
 	}
 	return defaultValue
 }
 
-func mapPaymentType(pt string) string {
-	mapping := map[string]string{
-		"sale":      string(paymenttype.SALE),
-		"refund":    string(paymenttype.REFUND),
-		"authorize": string(paymenttype.AUTH),
-		"capture":   string(paymenttype.CAPTURE),
+func copyFilters(filters map[string]string) map[string]string {
+	out := make(map[string]string, len(filters)+1)
+	for k, v := range filters {
+		out[k] = v
 	}
-	return mapping[strings.ToLower(pt)]
+	return out
 }
 
-func formatTransactionList(results interface{}) []TransactionInfo {
-	// Note: Actual implementation depends on SDK response structure
-	// This is a placeholder that should be adapted based on actual SDK types
-	transactions := []TransactionInfo{}
-
-	// TODO: Parse actual SDK response structure
-	// For now, return empty list - this should be implemented based on actual SDK
-
-	return transactions
+func currencyOr(currency string) string {
+	if currency == "" {
+		return "USD"
+	}
+	return currency
 }
 
-func formatTransactionDetails(txn interface{}) TransactionDetails {
-	// TODO: Parse actual SDK transaction detail structure
-	return TransactionDetails{}
+func setDataAccount(query url.Values, id, name string) {
+	if name != "" {
+		query.Set("account_name", name)
+	}
+	if id != "" {
+		query.Set("account_id", id)
+	}
 }
 
-func formatSettlementList(results interface{}) []SettlementInfo {
-	// TODO: Parse actual SDK settlement structure
-	return []SettlementInfo{}
-}
-
-func formatDisputeList(results interface{}) []DisputeInfo {
-	// TODO: Parse actual SDK dispute structure
-	return []DisputeInfo{}
-}
-
-func formatDepositList(results interface{}) []DepositInfo {
-	// TODO: Parse actual SDK deposit structure
-	return []DepositInfo{}
-}
-
-func formatBatchList(results interface{}) []BatchInfo {
-	// TODO: Parse actual SDK batch structure
-	return []BatchInfo{}
-}
-
-func formatDisputeDetails(dispute interface{}) map[string]interface{} {
-	// TODO: Parse actual SDK dispute detail structure
-	return map[string]interface{}{}
-}
-
-func formatDepositDetails(deposit interface{}) map[string]interface{} {
-	// TODO: Parse actual SDK deposit detail structure
-	return map[string]interface{}{}
-}
-
-func filterByStatus(transactions []TransactionInfo, status string) []TransactionInfo {
+func filterTransactions(transactions []TransactionInfo, keep func(TransactionInfo) bool) []TransactionInfo {
 	filtered := []TransactionInfo{}
-	for _, txn := range transactions {
-		if strings.ToUpper(txn.Status) == status {
-			filtered = append(filtered, txn)
+	for _, t := range transactions {
+		if keep(t) {
+			filtered = append(filtered, t)
 		}
 	}
 	return filtered
 }
 
+func formatTransaction(t gpTransaction) TransactionInfo {
+	info := TransactionInfo{
+		TransactionID:   t.ID,
+		Timestamp:       t.TimeCreated,
+		Amount:          float64(t.Amount),
+		Currency:        currencyOr(t.Currency),
+		Status:          t.Status,
+		ReferenceNumber: t.Reference,
+	}
+	if pm := t.PaymentMethod; pm != nil {
+		switch {
+		case pm.Card != nil:
+			info.PaymentMethod = "CARD"
+			info.CardLastFour = pm.Card.MaskedNumberFirst6Last4
+			info.AuthCode = pm.Card.AuthCode
+		case pm.DigitalWallet != nil:
+			info.PaymentMethod = "DIGITAL WALLET"
+			info.CardLastFour = pm.DigitalWallet.MaskedTokenFirst6Last4
+		case pm.BankTransfer != nil && pm.APM == nil:
+			info.PaymentMethod = "BANK TRANSFER"
+		}
+		if pm.APM != nil {
+			info.PaymentMethod = "APM"
+		}
+	}
+	return info
+}
+
+func disputeCard(d gpDispute) *gpCard {
+	if d.Transaction != nil && d.Transaction.PaymentMethod != nil && d.Transaction.PaymentMethod.Card != nil {
+		return d.Transaction.PaymentMethod.Card
+	}
+	if d.PaymentMethod != nil {
+		return d.PaymentMethod.Card
+	}
+	return nil
+}
+
+func formatDispute(d gpDispute) DisputeInfo {
+	caseTime := d.TimeCreated
+	if caseTime == "" {
+		caseTime = d.StageTimeCreated
+	}
+	info := DisputeInfo{
+		DisputeID:         d.ID,
+		DisputeStage:      d.Stage,
+		DisputeStatus:     d.Status,
+		CaseAmount:        float64(d.Amount),
+		Currency:          currencyOr(d.Currency),
+		ReasonCode:        d.ReasonCode,
+		ReasonDescription: d.ReasonDescription,
+		CaseTime:          caseTime,
+	}
+	if d.Transaction != nil {
+		info.TransactionID = d.Transaction.ID
+	}
+	return info
+}
+
+func formatDeposit(d gpDeposit) DepositInfo {
+	info := DepositInfo{
+		DepositID:     d.ID,
+		DepositDate:   d.TimeCreated,
+		DepositStatus: d.Status,
+		DepositAmount: float64(d.Amount),
+		Currency:      currencyOr(d.Currency),
+		SalesCount:    d.Sales.Count,
+		SalesAmount:   float64(d.Sales.Amount),
+		RefundsCount:  d.Refunds.Count,
+		RefundsAmount: float64(d.Refunds.Amount),
+	}
+	if d.System != nil {
+		info.MerchantNumber = d.System.MID
+		info.MerchantHierarchy = d.System.Hierarchy
+	}
+	return info
+}
+
 func generateSettlementSummary(settlements []SettlementInfo) map[string]interface{} {
 	var totalAmount float64
 	var totalTransactions int
-
 	for _, s := range settlements {
 		totalAmount += s.TotalAmount
 		totalTransactions += s.TransactionCount
@@ -809,47 +761,22 @@ func generateSettlementSummary(settlements []SettlementInfo) map[string]interfac
 	}
 
 	return map[string]interface{}{
-		"total_settlements":          len(settlements),
-		"total_amount":               totalAmount,
-		"total_transactions":         totalTransactions,
-		"average_settlement_amount":  avgAmount,
-	}
-}
-
-func generateBatchSummary(batches []BatchInfo) map[string]interface{} {
-	var totalAmount float64
-	var totalTransactions int
-	statusCounts := make(map[string]int)
-
-	for _, b := range batches {
-		totalAmount += b.TotalAmount
-		totalTransactions += b.TransactionCount
-		statusCounts[b.BatchStatus]++
-	}
-
-	avgAmount := 0.0
-	if len(batches) > 0 {
-		avgAmount = totalAmount / float64(len(batches))
-	}
-
-	return map[string]interface{}{
-		"total_batches":        len(batches),
-		"total_amount":         totalAmount,
-		"total_transactions":   totalTransactions,
-		"average_batch_amount": avgAmount,
-		"status_breakdown":     statusCounts,
+		"total_settlements":         len(settlements),
+		"total_amount":              totalAmount,
+		"total_transactions":        totalTransactions,
+		"average_settlement_amount": avgAmount,
 	}
 }
 
 func calculateSummaryStats(transactions []TransactionInfo) map[string]interface{} {
 	var totalAmount float64
-	statusCounts := make(map[string]int)
-	paymentTypeCounts := make(map[string]int)
+	statusCounts := map[string]int{}
+	paymentTypeCounts := map[string]int{}
 
-	for _, txn := range transactions {
-		totalAmount += txn.Amount
-		statusCounts[txn.Status]++
-		paymentTypeCounts[txn.PaymentMethod]++
+	for _, t := range transactions {
+		totalAmount += t.Amount
+		statusCounts[orUnknown(t.Status, "unknown")]++
+		paymentTypeCounts[orUnknown(t.PaymentMethod, "unknown")]++
 	}
 
 	avgAmount := 0.0
@@ -858,30 +785,34 @@ func calculateSummaryStats(transactions []TransactionInfo) map[string]interface{
 	}
 
 	return map[string]interface{}{
-		"total_transactions":      len(transactions),
-		"total_amount":            totalAmount,
-		"average_amount":          avgAmount,
-		"status_breakdown":        statusCounts,
-		"payment_type_breakdown":  paymentTypeCounts,
+		"total_transactions":     len(transactions),
+		"total_amount":           totalAmount,
+		"average_amount":         avgAmount,
+		"status_breakdown":       statusCounts,
+		"payment_type_breakdown": paymentTypeCounts,
 	}
+}
+
+func orUnknown(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func analyzeDeclines(transactions []TransactionInfo) map[string]interface{} {
 	var totalAmount float64
-	declineReasons := make(map[string]int)
-	cardTypes := make(map[string]int)
-	hourlyBreakdown := make(map[string]int)
+	declineReasons := map[string]int{}
+	cardTypes := map[string]int{}
+	hourlyBreakdown := map[string]int{}
 
-	for _, txn := range transactions {
-		totalAmount += txn.Amount
-
-		// Card type breakdown
-		cardTypes[txn.PaymentMethod]++
-
-		// Parse timestamp for hourly breakdown
-		if t, err := time.Parse("2006-01-02 15:04:05", txn.Timestamp); err == nil {
-			hour := t.Format("15")
-			hourlyBreakdown[hour]++
+	for _, t := range transactions {
+		totalAmount += t.Amount
+		// The list rows carry no gateway message, as in the other languages
+		declineReasons["Unknown"]++
+		cardTypes[orUnknown(t.PaymentMethod, "Unknown")]++
+		if ts, err := time.Parse(time.RFC3339, t.Timestamp); err == nil {
+			hourlyBreakdown[ts.Format("15")]++
 		}
 	}
 
@@ -900,103 +831,128 @@ func analyzeDeclines(transactions []TransactionInfo) map[string]interface{} {
 	}
 }
 
-func generateComprehensiveSummary(reportData map[string]interface{}) map[string]interface{} {
-	summary := map[string]interface{}{
-		"overview":            map[string]interface{}{},
-		"financial_summary":   map[string]interface{}{},
-		"operational_metrics": map[string]interface{}{},
-	}
+func generateComprehensiveSummary(data map[string]interface{}) map[string]interface{} {
+	overview := map[string]interface{}{}
+	financial := map[string]interface{}{}
+	operational := map[string]interface{}{}
 
-	// Transaction overview
-	if txnData, ok := reportData["transactions"].(map[string]interface{}); ok {
-		if txns, ok := txnData["transactions"].([]TransactionInfo); ok && len(txns) > 0 {
-			var totalAmount float64
-			for _, txn := range txns {
-				totalAmount += txn.Amount
+	transactionCount := 0
+	if section, ok := data["transactions"].(map[string]interface{}); ok {
+		if txns, ok := section["transactions"].([]TransactionInfo); ok && len(txns) > 0 {
+			var total float64
+			for _, t := range txns {
+				total += t.Amount
 			}
-
-			overview := summary["overview"].(map[string]interface{})
+			transactionCount = len(txns)
 			overview["transactions"] = map[string]interface{}{
 				"count":          len(txns),
-				"total_amount":   totalAmount,
-				"average_amount": totalAmount / float64(len(txns)),
+				"total_amount":   total,
+				"average_amount": total / float64(len(txns)),
 			}
 		}
 	}
 
-	return summary
+	if section, ok := data["settlements"].(map[string]interface{}); ok {
+		if rows, ok := section["settlements"].([]SettlementInfo); ok && len(rows) > 0 {
+			var total float64
+			for _, s := range rows {
+				total += s.TotalAmount
+			}
+			financial["settlements"] = map[string]interface{}{"count": len(rows), "total_amount": total}
+		}
+	}
+
+	if section, ok := data["disputes"].(map[string]interface{}); ok {
+		if rows, ok := section["disputes"].([]DisputeInfo); ok && len(rows) > 0 {
+			var total float64
+			for _, d := range rows {
+				total += d.CaseAmount
+			}
+			rate := 0.0
+			if transactionCount > 0 {
+				rate = float64(len(rows)) / float64(transactionCount) * 100
+			}
+			operational["disputes"] = map[string]interface{}{"count": len(rows), "total_amount": total, "dispute_rate": rate}
+		}
+	}
+
+	if section, ok := data["deposits"].(map[string]interface{}); ok {
+		if rows, ok := section["deposits"].([]DepositInfo); ok && len(rows) > 0 {
+			var total float64
+			for _, d := range rows {
+				total += d.DepositAmount
+			}
+			financial["deposits"] = map[string]interface{}{"count": len(rows), "total_amount": total}
+		}
+	}
+
+	return map[string]interface{}{
+		"overview":            overview,
+		"financial_summary":   financial,
+		"operational_metrics": operational,
+	}
+}
+
+func exportFilename(extension string) string {
+	return fmt.Sprintf("transactions_%s.%s", time.Now().Format("2006-01-02_15-04-05"), extension)
 }
 
 func exportToCSV(transactions []TransactionInfo) (map[string]interface{}, error) {
 	var builder strings.Builder
 	writer := csv.NewWriter(&builder)
 
-	// Write header
-	header := []string{"Transaction ID", "Timestamp", "Amount", "Currency", "Status", "Payment Method", "Card Last Four", "Auth Code", "Reference Number"}
-	writer.Write(header)
-
-	// Write data
-	for _, txn := range transactions {
-		record := []string{
-			txn.TransactionID,
-			txn.Timestamp,
-			fmt.Sprintf("%.2f", txn.Amount),
-			txn.Currency,
-			txn.Status,
-			txn.PaymentMethod,
-			txn.CardLastFour,
-			txn.AuthCode,
-			txn.ReferenceNumber,
-		}
-		writer.Write(record)
+	writer.Write([]string{"Transaction ID", "Timestamp", "Amount", "Currency", "Status", "Payment Method", "Card Last Four", "Auth Code", "Reference Number"})
+	for _, t := range transactions {
+		writer.Write([]string{
+			t.TransactionID,
+			t.Timestamp,
+			fmt.Sprintf("%.2f", t.Amount),
+			t.Currency,
+			t.Status,
+			t.PaymentMethod,
+			t.CardLastFour,
+			t.AuthCode,
+			t.ReferenceNumber,
+		})
 	}
-
 	writer.Flush()
 	if err := writer.Error(); err != nil {
 		return nil, err
 	}
 
-	filename := fmt.Sprintf("transactions_%s.csv", time.Now().Format("2006-01-02_15-04-05"))
-
 	return map[string]interface{}{
 		"success":   true,
 		"data":      builder.String(),
 		"format":    "csv",
-		"filename":  filename,
-		"timestamp": time.Now().Format("2006-01-02 15:04:05"),
+		"filename":  exportFilename("csv"),
+		"timestamp": now(),
 	}, nil
 }
 
 func exportToXML(transactions []TransactionInfo) (map[string]interface{}, error) {
-	type TransactionList struct {
+	type transactionList struct {
 		XMLName      xml.Name          `xml:"transactions"`
 		Transactions []TransactionInfo `xml:"transaction"`
 	}
 
-	txnList := TransactionList{Transactions: transactions}
-	xmlData, err := xml.MarshalIndent(txnList, "", "  ")
+	xmlData, err := xml.MarshalIndent(transactionList{Transactions: transactions}, "", "  ")
 	if err != nil {
 		return nil, err
 	}
 
-	filename := fmt.Sprintf("transactions_%s.xml", time.Now().Format("2006-01-02_15-04-05"))
-
 	return map[string]interface{}{
 		"success":   true,
-		"data":      string(xmlData),
+		"data":      xml.Header + string(xmlData),
 		"format":    "xml",
-		"filename":  filename,
-		"timestamp": time.Now().Format("2006-01-02 15:04:05"),
+		"filename":  exportFilename("xml"),
+		"timestamp": now(),
 	}, nil
 }
 
 // GetSDKConfigStatus returns current SDK configuration status
 func GetSDKConfigStatus() map[string]interface{} {
-	appID := os.Getenv("GP_API_APP_ID")
-	appKey := os.Getenv("GP_API_APP_KEY")
-
-	hasAppID := appID != ""
-	hasAppKey := appKey != ""
+	hasAppID := os.Getenv("GP_API_APP_ID") != ""
+	hasAppKey := os.Getenv("GP_API_APP_KEY") != ""
 	isConfigured := hasAppID && hasAppKey
 
 	env := "Not configured"
@@ -1009,40 +965,29 @@ func GetSDKConfigStatus() map[string]interface{} {
 		"has_app_id":  hasAppID,
 		"has_app_key": hasAppKey,
 		"environment": env,
-		"timestamp":   time.Now().Format("2006-01-02 15:04:05"),
+		"timestamp":   now(),
 	}
 }
 
 // ValidateEnvironmentConfig validates environment configuration
 func ValidateEnvironmentConfig() map[string]interface{} {
-	results := map[string]interface{}{
-		"valid":    true,
-		"errors":   []string{},
-		"warnings": []string{},
-	}
-
-	errors := []string{}
+	errs := []string{}
 	warnings := []string{}
 
-	// Check required variables
-	required := []string{"GP_API_APP_ID", "GP_API_APP_KEY"}
-	for _, varName := range required {
-		if os.Getenv(varName) == "" {
-			errors = append(errors, fmt.Sprintf("Missing required environment variable: %s", varName))
-			results["valid"] = false
+	for _, name := range []string{"GP_API_APP_ID", "GP_API_APP_KEY"} {
+		if os.Getenv(name) == "" {
+			errs = append(errs, fmt.Sprintf("Missing required environment variable: %s", name))
+		}
+	}
+	for _, name := range []string{"PUBLIC_API_KEY", "SECRET_API_KEY"} {
+		if os.Getenv(name) != "" {
+			warnings = append(warnings, fmt.Sprintf("Legacy variable %s found. GP-API uses GP_API_APP_ID and GP_API_APP_KEY.", name))
 		}
 	}
 
-	// Check legacy variables and warn if present
-	legacy := []string{"PUBLIC_API_KEY", "SECRET_API_KEY"}
-	for _, varName := range legacy {
-		if os.Getenv(varName) != "" {
-			warnings = append(warnings, fmt.Sprintf("Legacy variable %s found. GP-API uses GP_API_APP_ID and GP_API_APP_KEY.", varName))
-		}
+	return map[string]interface{}{
+		"valid":    len(errs) == 0,
+		"errors":   errs,
+		"warnings": warnings,
 	}
-
-	results["errors"] = errors
-	results["warnings"] = warnings
-
-	return results
 }

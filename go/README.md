@@ -16,7 +16,11 @@ Copy `.env.sample` to `.env` and add your credentials:
 ```env
 PUBLIC_API_KEY=pkapi_cert_your_key_here
 SECRET_API_KEY=skapi_cert_your_key_here
+GP_API_APP_ID=your_gp_api_app_id
+GP_API_APP_KEY=your_gp_api_app_key
 ```
+
+The reports are read from GP API with `GP_API_APP_ID` and `GP_API_APP_KEY` (sandbox).
 
 ### 2. Install Dependencies
 
@@ -27,7 +31,7 @@ go mod download
 ### 3. Start the Server
 
 ```bash
-go run main.go
+go run .
 ```
 
 The application will start on `http://localhost:8000`
@@ -57,12 +61,12 @@ Open your browser to:
 
 **Get Configuration**
 ```bash
-curl http://localhost:8888/config
+curl http://localhost:8000/config
 ```
 
 **Process Payment**
 ```bash
-curl -X POST http://localhost:8888/process-payment \
+curl -X POST http://localhost:8000/process-payment \
   -H "Content-Type: application/json" \
   -d '{"payment_token":"YOUR_TOKEN","billing_zip":"12345","amount":"25.00"}'
 ```
@@ -73,17 +77,17 @@ See [REPORTING_README.md](REPORTING_README.md) for complete reporting API docume
 
 **Quick Example - Search Transactions**
 ```bash
-curl "http://localhost:8888/reports/search?start_date=2025-09-01&page_size=10"
+curl "http://localhost:8000/reports/search?start_date=2025-09-01&page_size=10"
 ```
 
 ## Project Structure
 
 ```
 go/
-├── main.go                       # Main application
+├── main.go                       # Main application and routes
 ├── reporting_service.go          # Reporting service logic
-├── reports.go                    # Reporting API endpoints
-├── main_reporting.go             # Reporting server setup
+├── reports.go                    # Reporting API endpoints (/api/reports)
+├── gpapi.go                      # GP API client for the reports
 ├── static/
 │   └── index.html               # Payment form UI
 ├── go.mod                        # Go dependencies
@@ -97,7 +101,7 @@ go/
 
 ### Processing a Payment
 
-1. Open http://localhost:8888/ in your browser
+1. Open http://localhost:8000/ in your browser
 2. Use test card: `4012002000060016`
 3. Enter any future expiration date
 4. Enter CVV: `123`
@@ -109,7 +113,7 @@ go/
 After processing payments, search for them:
 
 ```bash
-curl "http://localhost:8888/reports/search?page_size=20"
+curl "http://localhost:8000/reports/search?page_size=20"
 ```
 
 ### Exporting Data
@@ -117,7 +121,7 @@ curl "http://localhost:8888/reports/search?page_size=20"
 Export transactions to CSV:
 
 ```bash
-curl "http://localhost:8888/reports/export?format=csv&start_date=2025-09-01" -o transactions.csv
+curl "http://localhost:8000/reports/export?format=csv&start_date=2025-09-01" -o transactions.csv
 ```
 
 ## Testing
@@ -135,11 +139,11 @@ curl "http://localhost:8888/reports/export?format=csv&start_date=2025-09-01" -o 
 1. **Process a payment** using the web interface
 2. **Verify transaction** appears in reporting:
    ```bash
-   curl "http://localhost:8888/reports/search"
+   curl "http://localhost:8000/reports/search"
    ```
 3. **Get transaction details**:
    ```bash
-   curl "http://localhost:8888/reports/detail?transaction_id=TRN_xxx"
+   curl "http://localhost:8000/reports/detail?transaction_id=TRN_xxx"
    ```
 
 ## Environment Variables
@@ -153,7 +157,8 @@ curl "http://localhost:8888/reports/export?format=csv&start_date=2025-09-01" -o 
 
 **Port already in use?**
 ```bash
-# Modify the port in main.go or main_reporting.go
+# Set another port
+PORT=8001 go run .
 ```
 
 **Missing credentials error?**

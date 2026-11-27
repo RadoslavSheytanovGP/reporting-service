@@ -18,28 +18,28 @@ GP_API_ENVIRONMENT=TEST  # or PRODUCTION
 
 ```bash
 cd go
-go mod tidy
-go run reporting_service.go reports.go main_reporting.go
+go mod download
+go run .
 ```
 
-The API will be available at `http://localhost:8080/reports`
+The API will be available at `http://localhost:8000/api/reports` (the same path as the Node.js server; `/reports` works as well)
 
 ### 3. Verify Configuration
 
 ```bash
-curl "http://localhost:8080/reports/config"
+curl "http://localhost:8000/reports/config"
 ```
 
 ## API Endpoints
 
-All endpoints use `/reports/{action}` or `/reports?action={action_name}` and support both GET and POST requests.
+All endpoints use `/api/reports?action={action_name}` or `/api/reports/{action}` (also under `/reports`) and support both GET and POST requests.
 
 ### Search Transactions
 
 Search and filter transactions with pagination.
 
 ```bash
-curl "http://localhost:8080/reports/search?start_date=2025-09-01&end_date=2025-09-30&page_size=20"
+curl "http://localhost:8000/reports/search?start_date=2025-09-01&end_date=2025-09-30&page_size=20"
 ```
 
 **Parameters**:
@@ -59,7 +59,7 @@ curl "http://localhost:8080/reports/search?start_date=2025-09-01&end_date=2025-0
 Retrieve detailed information for a specific transaction.
 
 ```bash
-curl "http://localhost:8080/reports/detail?transaction_id=TRN_123456"
+curl "http://localhost:8000/reports/detail?transaction_id=TRN_123456"
 ```
 
 **Required**: `transaction_id`
@@ -69,7 +69,7 @@ curl "http://localhost:8080/reports/detail?transaction_id=TRN_123456"
 Get settlement information for a date range.
 
 ```bash
-curl "http://localhost:8080/reports/settlement?start_date=2025-09-01&end_date=2025-09-30"
+curl "http://localhost:8000/reports/settlement?start_date=2025-09-01&end_date=2025-09-30"
 ```
 
 **Parameters**:
@@ -82,17 +82,17 @@ Export transaction data in JSON, CSV, or XML format.
 
 **CSV Export**:
 ```bash
-curl "http://localhost:8080/reports/export?format=csv&start_date=2025-09-01&end_date=2025-09-30" -o transactions.csv
+curl "http://localhost:8000/reports/export?format=csv&start_date=2025-09-01&end_date=2025-09-30" -o transactions.csv
 ```
 
 **XML Export**:
 ```bash
-curl "http://localhost:8080/reports/export?format=xml&start_date=2025-09-01&end_date=2025-09-30" -o transactions.xml
+curl "http://localhost:8000/reports/export?format=xml&start_date=2025-09-01&end_date=2025-09-30" -o transactions.xml
 ```
 
 **JSON Export**:
 ```bash
-curl "http://localhost:8080/reports/export?format=json&start_date=2025-09-01&end_date=2025-09-30"
+curl "http://localhost:8000/reports/export?format=json&start_date=2025-09-01&end_date=2025-09-30"
 ```
 
 **Parameters**:
@@ -104,7 +104,7 @@ curl "http://localhost:8080/reports/export?format=json&start_date=2025-09-01&end
 Get aggregate statistics for transactions.
 
 ```bash
-curl "http://localhost:8080/reports/summary?start_date=2025-09-01&end_date=2025-09-30"
+curl "http://localhost:8000/reports/summary?start_date=2025-09-01&end_date=2025-09-30"
 ```
 
 **Returns**:
@@ -119,7 +119,7 @@ curl "http://localhost:8080/reports/summary?start_date=2025-09-01&end_date=2025-
 Get dispute information with filtering.
 
 ```bash
-curl "http://localhost:8080/reports/disputes?start_date=2025-09-01&end_date=2025-09-30"
+curl "http://localhost:8000/reports/disputes?start_date=2025-09-01&end_date=2025-09-30"
 ```
 
 **Parameters**:
@@ -130,7 +130,7 @@ curl "http://localhost:8080/reports/disputes?start_date=2025-09-01&end_date=2025
 
 **Get Dispute Details**:
 ```bash
-curl "http://localhost:8080/reports/dispute/DIS_123456"
+curl "http://localhost:8000/reports/dispute/DIS_123456"
 ```
 
 ### Deposit Report
@@ -138,7 +138,7 @@ curl "http://localhost:8080/reports/dispute/DIS_123456"
 Get deposit information and details.
 
 ```bash
-curl "http://localhost:8080/reports/deposits?start_date=2025-09-01&end_date=2025-09-30"
+curl "http://localhost:8000/reports/deposits?start_date=2025-09-01&end_date=2025-09-30"
 ```
 
 **Parameters**:
@@ -149,7 +149,7 @@ curl "http://localhost:8080/reports/deposits?start_date=2025-09-01&end_date=2025
 
 **Get Deposit Details**:
 ```bash
-curl "http://localhost:8080/reports/deposit/DEP_123456"
+curl "http://localhost:8000/reports/deposit/DEP_123456"
 ```
 
 ### Declined Transactions Report
@@ -157,7 +157,7 @@ curl "http://localhost:8080/reports/deposit/DEP_123456"
 Get declined transactions with analysis.
 
 ```bash
-curl "http://localhost:8080/reports/declines?start_date=2025-09-01&end_date=2025-09-30"
+curl "http://localhost:8000/reports/declines?start_date=2025-09-01&end_date=2025-09-30"
 ```
 
 **Returns** transaction data plus decline analysis:
@@ -170,7 +170,7 @@ curl "http://localhost:8080/reports/declines?start_date=2025-09-01&end_date=2025
 Get a combined report across all transaction types.
 
 ```bash
-curl "http://localhost:8080/reports/date-range?start_date=2025-09-01&end_date=2025-09-30&transaction_limit=100"
+curl "http://localhost:8000/reports/date-range?start_date=2025-09-01&end_date=2025-09-30&transaction_limit=100"
 ```
 
 **Parameters**:
@@ -192,7 +192,7 @@ curl "http://localhost:8080/reports/date-range?start_date=2025-09-01&end_date=20
 Get batch report information.
 
 ```bash
-curl "http://localhost:8080/reports/batches?start_date=2025-09-01&end_date=2025-09-30"
+curl "http://localhost:8000/reports/batches?start_date=2025-09-01&end_date=2025-09-30"
 ```
 
 ## Response Format
@@ -232,31 +232,31 @@ curl "http://localhost:8080/reports/batches?start_date=2025-09-01&end_date=2025-
 ### Daily Transaction Report
 
 ```bash
-curl "http://localhost:8080/reports/summary?start_date=2025-09-30&end_date=2025-09-30"
+curl "http://localhost:8000/reports/summary?start_date=2025-09-30&end_date=2025-09-30"
 ```
 
 ### Find Specific Transaction
 
 ```bash
-curl "http://localhost:8080/reports/search?transaction_id=TRN_abc123"
+curl "http://localhost:8000/reports/search?transaction_id=TRN_abc123"
 ```
 
 ### Export Monthly Transactions
 
 ```bash
-curl "http://localhost:8080/reports/export?format=csv&start_date=2025-09-01&end_date=2025-09-30" -o september_transactions.csv
+curl "http://localhost:8000/reports/export?format=csv&start_date=2025-09-01&end_date=2025-09-30" -o september_transactions.csv
 ```
 
 ### Analyze Declines
 
 ```bash
-curl "http://localhost:8080/reports/declines?start_date=2025-09-01&end_date=2025-09-30"
+curl "http://localhost:8000/reports/declines?start_date=2025-09-01&end_date=2025-09-30"
 ```
 
 ### Check Settlement Status
 
 ```bash
-curl "http://localhost:8080/reports/settlement?start_date=2025-09-30"
+curl "http://localhost:8000/reports/settlement?start_date=2025-09-30"
 ```
 
 ## Notes
@@ -272,5 +272,5 @@ curl "http://localhost:8080/reports/settlement?start_date=2025-09-30"
 View complete API documentation:
 
 ```bash
-curl http://localhost:8080/reports
+curl http://localhost:8000/reports
 ```
