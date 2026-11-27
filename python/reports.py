@@ -5,7 +5,7 @@ This script provides RESTful API endpoints for accessing Global Payments
 reporting functionality including transaction search, details, settlement
 reports, and data export capabilities.
 
-Python version 3.7 or higher
+Python version 3.11 or higher
 """
 
 from flask import Blueprint, request, jsonify, Response, current_app
@@ -120,18 +120,19 @@ def filter_empty_params(params: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in params.items() if v not in ('', None)}
 
 
-@reports_bp.route('/', methods=['GET', 'POST', 'OPTIONS'])
+@reports_bp.route('/api/reports', methods=['GET', 'POST', 'OPTIONS'])
 @reports_bp.route('/reports', methods=['GET', 'POST', 'OPTIONS'])
 def reports_handler():
     """Main reports endpoint handler"""
+    # The page calls /api/reports, the same path as the Node.js server;
+    # /reports is kept for existing callers. The service (and its GP API
+    # credentials) is only created for actions that call the gateway, so the
+    # docs and the config check work before the .env is filled in.
     # Handle preflight OPTIONS request
     if request.method == 'OPTIONS':
         return '', 200
 
     try:
-        # Initialize the reporting service
-        reporting_service = GlobalPaymentsReportingService()
-
         # Get request parameters
         params = get_request_params()
         action = params.get('action', '')
@@ -162,14 +163,14 @@ def reports_handler():
             # Remove empty filters
             filters = filter_empty_params(filters)
 
-            result = reporting_service.search_transactions(filters)
+            result = GlobalPaymentsReportingService().search_transactions(filters)
             return jsonify(result)
 
         elif action == 'detail':
             # Get transaction details
             validate_required_params(params, ['transaction_id'])
 
-            result = reporting_service.get_transaction_details(params['transaction_id'])
+            result = GlobalPaymentsReportingService().get_transaction_details(params['transaction_id'])
             return jsonify(result)
 
         elif action == 'settlement':
@@ -191,7 +192,7 @@ def reports_handler():
             # Remove empty filters
             settlement_params = filter_empty_params(settlement_params)
 
-            result = reporting_service.get_settlement_report(settlement_params)
+            result = GlobalPaymentsReportingService().get_settlement_report(settlement_params)
             return jsonify(result)
 
         elif action == 'export':
@@ -221,7 +222,7 @@ def reports_handler():
             # Remove empty filters
             export_filters = filter_empty_params(export_filters)
 
-            result = reporting_service.export_transactions(export_filters, export_format)
+            result = GlobalPaymentsReportingService().export_transactions(export_filters, export_format)
 
             if export_format == 'csv':
                 return Response(
@@ -255,7 +256,7 @@ def reports_handler():
             # Remove empty filters
             summary_params = filter_empty_params(summary_params)
 
-            result = reporting_service.get_summary_stats(summary_params)
+            result = GlobalPaymentsReportingService().get_summary_stats(summary_params)
             return jsonify(result)
 
         elif action == 'disputes':
@@ -279,14 +280,14 @@ def reports_handler():
             # Remove empty filters
             dispute_filters = filter_empty_params(dispute_filters)
 
-            result = reporting_service.get_dispute_report(dispute_filters)
+            result = GlobalPaymentsReportingService().get_dispute_report(dispute_filters)
             return jsonify(result)
 
         elif action == 'dispute_detail':
             # Get dispute details
             validate_required_params(params, ['dispute_id'])
 
-            result = reporting_service.get_dispute_details(params['dispute_id'])
+            result = GlobalPaymentsReportingService().get_dispute_details(params['dispute_id'])
             return jsonify(result)
 
         elif action == 'deposits':
@@ -310,14 +311,14 @@ def reports_handler():
             # Remove empty filters
             deposit_filters = filter_empty_params(deposit_filters)
 
-            result = reporting_service.get_deposit_report(deposit_filters)
+            result = GlobalPaymentsReportingService().get_deposit_report(deposit_filters)
             return jsonify(result)
 
         elif action == 'deposit_detail':
             # Get deposit details
             validate_required_params(params, ['deposit_id'])
 
-            result = reporting_service.get_deposit_details(params['deposit_id'])
+            result = GlobalPaymentsReportingService().get_deposit_details(params['deposit_id'])
             return jsonify(result)
 
         elif action == 'batches':
@@ -337,7 +338,7 @@ def reports_handler():
             # Remove empty filters
             batch_filters = filter_empty_params(batch_filters)
 
-            result = reporting_service.get_batch_report(batch_filters)
+            result = GlobalPaymentsReportingService().get_batch_report(batch_filters)
             return jsonify(result)
 
         elif action == 'declines':
@@ -363,7 +364,7 @@ def reports_handler():
             # Remove empty filters
             decline_filters = filter_empty_params(decline_filters)
 
-            result = reporting_service.get_declined_transactions_report(decline_filters)
+            result = GlobalPaymentsReportingService().get_declined_transactions_report(decline_filters)
             return jsonify(result)
 
         elif action == 'date_range':
@@ -387,7 +388,7 @@ def reports_handler():
             # Remove empty filters
             date_range_params = filter_empty_params(date_range_params)
 
-            result = reporting_service.get_date_range_report(date_range_params)
+            result = GlobalPaymentsReportingService().get_date_range_report(date_range_params)
             return jsonify(result)
 
         elif action == 'config':
@@ -401,19 +402,19 @@ def reports_handler():
                     'sdk_status': config_status,
                     'environment_validation': env_validation,
                     'api_endpoints': {
-                        'search': '/reports?action=search',
-                        'detail': '/reports?action=detail&transaction_id={id}',
-                        'settlement': '/reports?action=settlement',
-                        'disputes': '/reports?action=disputes',
-                        'dispute_detail': '/reports?action=dispute_detail&dispute_id={id}',
-                        'deposits': '/reports?action=deposits',
-                        'deposit_detail': '/reports?action=deposit_detail&deposit_id={id}',
-                        'batches': '/reports?action=batches',
-                        'declines': '/reports?action=declines',
-                        'date_range': '/reports?action=date_range',
-                        'export': '/reports?action=export&format={json|csv|xml}',
-                        'summary': '/reports?action=summary',
-                        'config': '/reports?action=config'
+                        'search': '/api/reports?action=search',
+                        'detail': '/api/reports?action=detail&transaction_id={id}',
+                        'settlement': '/api/reports?action=settlement',
+                        'disputes': '/api/reports?action=disputes',
+                        'dispute_detail': '/api/reports?action=dispute_detail&dispute_id={id}',
+                        'deposits': '/api/reports?action=deposits',
+                        'deposit_detail': '/api/reports?action=deposit_detail&deposit_id={id}',
+                        'batches': '/api/reports?action=batches',
+                        'declines': '/api/reports?action=declines',
+                        'date_range': '/api/reports?action=date_range',
+                        'export': '/api/reports?action=export&format={json|csv|xml}',
+                        'summary': '/api/reports?action=summary',
+                        'config': '/api/reports?action=config'
                     }
                 },
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -429,7 +430,7 @@ def reports_handler():
                     'description': 'RESTful API for Global Payments transaction reporting and analytics',
                     'endpoints': {
                         'search': {
-                            'url': '/reports?action=search',
+                            'url': '/api/reports?action=search',
                             'method': 'GET/POST',
                             'description': 'Search transactions with filters and pagination',
                             'parameters': {
@@ -438,7 +439,7 @@ def reports_handler():
                                 'start_date': 'Start date (YYYY-MM-DD)',
                                 'end_date': 'End date (YYYY-MM-DD)',
                                 'transaction_id': 'Specific transaction ID',
-                                'payment_type': 'Payment type (sale, refund, authorize, capture)',
+                                'payment_type': 'Payment type (sale, refund)',
                                 'status': 'Transaction status',
                                 'amount_min': 'Minimum amount',
                                 'amount_max': 'Maximum amount',
@@ -446,7 +447,7 @@ def reports_handler():
                             }
                         },
                         'detail': {
-                            'url': '/reports?action=detail&transaction_id={id}',
+                            'url': '/api/reports?action=detail&transaction_id={id}',
                             'method': 'GET',
                             'description': 'Get detailed transaction information',
                             'parameters': {
@@ -454,7 +455,7 @@ def reports_handler():
                             }
                         },
                         'settlement': {
-                            'url': '/reports?action=settlement',
+                            'url': '/api/reports?action=settlement',
                             'method': 'GET/POST',
                             'description': 'Get settlement report',
                             'parameters': {
@@ -465,7 +466,7 @@ def reports_handler():
                             }
                         },
                         'export': {
-                            'url': '/reports?action=export&format={json|csv|xml}',
+                            'url': '/api/reports?action=export&format={json|csv|xml}',
                             'method': 'GET/POST',
                             'description': 'Export transaction data',
                             'parameters': {
@@ -474,7 +475,7 @@ def reports_handler():
                             }
                         },
                         'summary': {
-                            'url': '/reports?action=summary',
+                            'url': '/api/reports?action=summary',
                             'method': 'GET/POST',
                             'description': 'Get summary statistics',
                             'parameters': {
@@ -483,7 +484,7 @@ def reports_handler():
                             }
                         },
                         'disputes': {
-                            'url': '/reports?action=disputes',
+                            'url': '/api/reports?action=disputes',
                             'method': 'GET/POST',
                             'description': 'Get dispute report',
                             'parameters': {
@@ -496,7 +497,7 @@ def reports_handler():
                             }
                         },
                         'deposits': {
-                            'url': '/reports?action=deposits',
+                            'url': '/api/reports?action=deposits',
                             'method': 'GET/POST',
                             'description': 'Get deposit report',
                             'parameters': {
@@ -509,7 +510,7 @@ def reports_handler():
                             }
                         },
                         'batches': {
-                            'url': '/reports?action=batches',
+                            'url': '/api/reports?action=batches',
                             'method': 'GET/POST',
                             'description': 'Get batch report',
                             'parameters': {
@@ -518,7 +519,7 @@ def reports_handler():
                             }
                         },
                         'declines': {
-                            'url': '/reports?action=declines',
+                            'url': '/api/reports?action=declines',
                             'method': 'GET/POST',
                             'description': 'Get declined transactions report',
                             'parameters': {
@@ -533,7 +534,7 @@ def reports_handler():
                             }
                         },
                         'date_range': {
-                            'url': '/reports?action=date_range',
+                            'url': '/api/reports?action=date_range',
                             'method': 'GET/POST',
                             'description': 'Get comprehensive date range report',
                             'parameters': {
@@ -546,7 +547,7 @@ def reports_handler():
                             }
                         },
                         'config': {
-                            'url': '/reports?action=config',
+                            'url': '/api/reports?action=config',
                             'method': 'GET',
                             'description': 'Get API configuration and status'
                         }
