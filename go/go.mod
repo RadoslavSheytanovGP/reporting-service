@@ -3,8 +3,7 @@ module github.com/globalpayments/card-payments-go
 go 1.26
 
 require (
-	github.com/globalpayments/go-sdk v1.1.3
-	github.com/gorilla/mux v1.8.1
+	github.com/globalpayments/go-sdk v1.1.5
 	github.com/joho/godotenv v1.5.1
 )
 
