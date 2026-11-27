@@ -42,16 +42,16 @@
 
 ### Python (Flask + Global Payments SDK)
 - [`python/reporting_service.py`](python/reporting_service.py) — `GlobalPaymentsReportingService` class; `search_transactions()`, `get_settlement_report()`, `get_dispute_report()`, `get_deposit_report()`, `get_batch_report()`, `export_transactions()`, `get_summary_stats()`
-- [`python/reports.py`](python/reports.py) — Flask blueprint `reports_bp`; one handler at `/api/reports` (same path as Node.js, used by the page) and `/reports`, dispatching `?action=`; docs and `config` answer without credentials
+- [`python/reports.py`](python/reports.py): Flask blueprint `reports_bp`; one handler at `/api/reports` (same path as Node.js, used by the page) and `/reports`, dispatching `?action=`; docs and `config` answer without credentials
 - [`python/server.py`](python/server.py) — main entry; registers `reports_bp`; contains a template `/process-payment` Portico stub — see Critical Pattern 1
-- [`python/requirements.txt`](python/requirements.txt) — Flask 3.1, `globalpayments.api` 2.0.8 (`GpApiConfig` and the GP API connector arrived in 2.0.5; 2.0.4 has no GP API support). The SDK ignores `config.environment` for the URL, so `service_url` is set to the sandbox explicitly. Pass dates, ids and filters with `where(SearchCriteria...)`: `with_start_date()`, `with_dispute_id()` and `with_deposit_id()` are not read by its GP API request builder. The transaction search and the dispute list go through `_gp_api_list()` (the SDK connector and mapping) because the SDK request builder sends an empty `amount=` on `/transactions` (GP API answers `SYSTEM_ERROR_DOWNSTREAM`) and `from`/`to` instead of `from_stage_time_created`/`to_stage_time_created` on `/disputes`
+- [`python/requirements.txt`](python/requirements.txt): Flask 3.1, `globalpayments.api` 2.0.8 (`GpApiConfig` and the GP API connector arrived in 2.0.5; 2.0.4 has no GP API support). The SDK ignores `config.environment` for the URL, so `service_url` is set to the sandbox explicitly. Pass dates, ids and filters with `where(SearchCriteria...)`: `with_start_date()`, `with_dispute_id()` and `with_deposit_id()` are not read by its GP API request builder. The transaction search and the dispute list go through `_gp_api_list()` (the SDK connector and mapping) because the SDK request builder sends an empty `amount=` on `/transactions` (GP API answers `SYSTEM_ERROR_DOWNSTREAM`) and `from`/`to` instead of `from_stage_time_created`/`to_stage_time_created` on `/disputes`
 
 ### Go (net/http + Global Payments SDK)
-- [`go/gpapi.go`](go/gpapi.go) — small GP API client (access token, `GET` with `X-GP-Version`). The Go SDK has no GP API support at all (only `PorticoConfig`, up to v1.1.5), so the reports call `/transactions`, `/settlement/transactions`, `/disputes` and `/settlement/deposits` directly; settlement and deposit calls send the `DAA_` data account from the token response
-- [`go/reporting_service.go`](go/reporting_service.go) — `ReportingService` struct; `SearchTransactions()`, `GetTransactionDetails()`, `GetSettlementReport()`, `GetDisputeReport()`, `GetDisputeDetails()`, `GetDepositReport()`, `GetDepositDetails()`, `GetDateRangeReport()`, `ExportTransactions()`, `GetSummaryStats()`; the response shapes follow `nodejs/reporting-service.js`
-- [`go/reports.go`](go/reports.go) — `handleReports()`; `/api/reports?action=` like Node.js (also `/reports?action=`, `/api/reports/{action}`, `/reports/dispute/{id}`, `/reports/deposit/{id}`)
-- [`go/main.go`](go/main.go) — the only entry point: page, `/config`, the Portico `/process-payment` stub (see Critical Pattern 1) and the reporting routes; `go run .`
-- [`go/go.mod`](go/go.mod) — `github.com/globalpayments/go-sdk` v1.1.5 (used for the Portico payment only)
+- [`go/gpapi.go`](go/gpapi.go): small GP API client (access token, `GET` with `X-GP-Version`). The Go SDK has no GP API support at all (only `PorticoConfig`, up to v1.1.5), so the reports call `/transactions`, `/settlement/transactions`, `/disputes` and `/settlement/deposits` directly; settlement and deposit calls send the `DAA_` data account from the token response
+- [`go/reporting_service.go`](go/reporting_service.go): `ReportingService` struct; `SearchTransactions()`, `GetTransactionDetails()`, `GetSettlementReport()`, `GetDisputeReport()`, `GetDisputeDetails()`, `GetDepositReport()`, `GetDepositDetails()`, `GetDateRangeReport()`, `ExportTransactions()`, `GetSummaryStats()`; the response shapes follow `nodejs/reporting-service.js`
+- [`go/reports.go`](go/reports.go): `handleReports()`; `/api/reports?action=` like Node.js (also `/reports?action=`, `/api/reports/{action}`, `/reports/dispute/{id}`, `/reports/deposit/{id}`)
+- [`go/main.go`](go/main.go): the only entry point: page, `/config`, the Portico `/process-payment` stub (see Critical Pattern 1) and the reporting routes; `go run .`
+- [`go/go.mod`](go/go.mod): `github.com/globalpayments/go-sdk` v1.1.5 (used for the Portico payment only)
 
 ### Shared
 - [`index.html`](index.html) — root reporting dashboard frontend
@@ -103,7 +103,7 @@ cd dotnet && ./run.sh    # .NET — :8000
 cd java && ./run.sh      # Java — :8000
 cd python && ./run.sh    # Python — :8000
 
-cd go && ./run.sh        # Go — :8000
+cd go && ./run.sh        # Go on :8000
 
 # All at once:
 docker-compose up
