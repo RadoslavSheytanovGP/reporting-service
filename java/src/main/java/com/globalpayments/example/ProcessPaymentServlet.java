@@ -54,7 +54,9 @@ public class ProcessPaymentServlet extends HttpServlet {
             config.setVersionNumber("0000");
             config.setServiceUrl("https://cert.api2.heartlandportico.com");
 
-            ServicesContainer.configureService(config);
+            // Registered as "portico" so it does not replace the GP API default
+            // config the reports use (see ReportingService.java)
+            ServicesContainer.configureService(config, "portico");
         } catch (ConfigurationException e) {
             // Log configuration errors and propagate as ServletException
             throw new ServletException("Failed to configure Global Payments SDK", e);
@@ -150,7 +152,7 @@ public class ProcessPaymentServlet extends HttpServlet {
                     .withAllowDuplicates(true)
                     .withCurrency("USD")
                     .withAddress(address)
-                    .execute();
+                    .execute("portico");
 
             // Verify transaction was successful
             if (!"00".equals(transaction.getResponseCode())) {
