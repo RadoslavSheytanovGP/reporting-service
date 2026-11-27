@@ -7,6 +7,7 @@ Global Payments transactions including search, filtering, and data export.
 Python version 3.11 or higher
 """
 
+import json
 import logging
 import os
 from datetime import datetime
@@ -17,6 +18,8 @@ from dotenv import load_dotenv
 
 from globalpayments.api import GpApiConfig, ServicesContainer
 from globalpayments.api.builders import TransactionReportBuilder
+from globalpayments.api.entities.gp_api.gp_api_request import GpApiRequest
+from globalpayments.api.mappings.gpapi_mapping import GpApiMapping
 from globalpayments.api.services import ReportingService
 from globalpayments.api.entities.enums import (
     Environment,
@@ -98,26 +101,28 @@ class GlobalPaymentsReportingService:
             page = filters.get('page', 1)
             page_size = filters.get('page_size', 10)
 
-            report_builder = ReportingService.find_transactions_paged(
-                page, page_size, filters.get('transaction_id') or None
-            )
-
-            # Apply date range filters
-            self._apply_date_range(report_builder, filters)
+            # The SDK's transaction search sends an empty amount= parameter,
+            # which GP API answers with SYSTEM_ERROR_DOWNSTREAM, so the list is
+            # read with the SDK's connector and mapping instead (see _gp_api_list)
+            query = {
+                'page': page,
+                'page_size': page_size,
+                'id': filters.get('transaction_id'),
+                'from_time_created': filters.get('start_date'),
+                'to_time_created': filters.get('end_date'),
+                'number_last4': filters.get('card_last_four')
+            }
 
             # Apply payment type filter
             if filters.get('payment_type'):
                 payment_type = self._map_payment_type(filters['payment_type'])
                 if not payment_type:
                     raise ValueError('Invalid payment_type. Supported values: sale, refund')
-                report_builder.where(SearchCriteria.PaymentType, payment_type)
+                query['type'] = payment_type.value
 
-            # Apply card number filter (last 4 digits)
-            if filters.get('card_last_four'):
-                report_builder.where(SearchCriteria.CardNumberLastFour, filters['card_last_four'])
-
-            # Execute the search
-            response = report_builder.execute()
+            response = self._gp_api_list(
+                GpApiRequest.TRANSACTION_ENDPOINT, query, ReportType.FindTransactionsPaged
+            )
 
             transactions = self._format_transaction_list(response.result or [])
 
@@ -246,23 +251,20 @@ class GlobalPaymentsReportingService:
             page = filters.get('page', 1)
             page_size = filters.get('page_size', 10)
 
-            report_builder = TransactionReportBuilder(
-                ReportType.FindDisputesPaged
-            ).with_paging(page, page_size)
+            # The SDK sends the dispute dates as from/to, which GP API rejects
+            # (INVALID_REQUEST_DATA), so the list is read like the transactions
+            query = {
+                'page': page,
+                'page_size': page_size,
+                'from_stage_time_created': filters.get('start_date'),
+                'to_stage_time_created': filters.get('end_date'),
+                'stage': (filters.get('stage') or '').upper(),
+                'status': (filters.get('status') or '').upper()
+            }
 
-            # Apply date range filters
-            self._apply_date_range(report_builder, filters)
-
-            # Apply dispute stage filter
-            if filters.get('stage'):
-                report_builder.where(SearchCriteria.DisputeStage, filters['stage'].upper())
-
-            # Apply dispute status filter
-            if filters.get('status'):
-                report_builder.where(SearchCriteria.DisputeStatus, filters['status'].upper())
-
-            # Execute the search
-            response = report_builder.execute()
+            response = self._gp_api_list(
+                GpApiRequest.DISPUTES_ENDPOINT, query, ReportType.FindDisputesPaged
+            )
 
             return {
                 'success': True,
@@ -658,6 +660,18 @@ class GlobalPaymentsReportingService:
         if filters.get('end_date'):
             end_date = datetime.strptime(filters['end_date'], '%Y-%m-%d')
             report_builder.where(SearchCriteria.EndDate, end_date)
+
+    @staticmethod
+    def _gp_api_list(endpoint: str, query: Dict[str, Any], report_type: ReportType) -> Any:
+        """
+        GET a GP API list endpoint through the SDK's configured connector, which
+        signs in and raises the usual SDK errors, and map the answer with the
+        SDK's own report mapping. Empty parameters are left out.
+        """
+        connector = ServicesContainer.instance().get_client('default')
+        params = {k: v for k, v in query.items() if v not in (None, '')}
+        raw = connector.do_transaction('GET', endpoint, None, params)
+        return GpApiMapping.map_report_response(json.loads(raw or '{}'), report_type)
 
     @staticmethod
     def _text(value: Any) -> str:
