@@ -48,7 +48,9 @@ def configure_sdk():
     config.developer_id = '000000'  # Your developer ID
     config.version_number = '0000'  # Your version number
     
-    ServicesContainer.configure(config)
+    # Registered as 'portico' so the GP API 'default' config the reports set up
+    # (see reporting_service.py) does not replace it
+    ServicesContainer.configure(config, 'portico')
 
 # Configure SDK on startup
 configure_sdk()
@@ -128,13 +130,13 @@ def process_payment():
                 .with_allow_duplicates(True)\
                 .with_currency('USD')\
                 .with_address(address)\
-                .execute()
+                .execute('portico')
         else:
             # Process without address
             response = card.charge(amount)\
                 .with_allow_duplicates(True)\
                 .with_currency('USD')\
-                .execute()
+                .execute('portico')
 
         return jsonify({
             'success': True,
